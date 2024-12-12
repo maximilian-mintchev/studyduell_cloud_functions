@@ -271,44 +271,49 @@ export const getClassroom = functions.https.onRequest(async (req, res) => {
 
 export const createQuestionSet = functions.https.onRequest(async (req, res) => {
   try {
-    // Validierung des Requests
-    const {questionText, answers, correctAnswerId} = req.body;
+    const { questionText, answers, correctAnswerText } = req.body;
 
-    if (!questionText || !Array.isArray(answers) || answers.length !== 4 || !correctAnswerId) {
+    if (!questionText || !Array.isArray(answers) || answers.length !== 4 || !correctAnswerText) {
       res.status(400).json({
-        error: "Invalid input. Provide 'questionText', an array of 4 'answers', and a 'correctAnswerId'.",
+        error: "Invalid input. Provide 'questionText', an array of 4 'answers', and a 'correctAnswerText'.",
       });
-      return; // Beende die Funktion
+      return;
     }
 
-    // Überprüfen, ob die korrekte Antwort in den Antworten enthalten ist
-    const isValidCorrectAnswer = answers.some((answer) => answer.id === correctAnswerId);
-    if (!isValidCorrectAnswer) {
-      res.status(400).json({
-        error: "The correctAnswerId must match one of the IDs in the answers array.",
-      });
-      return; // Beende die Funktion
-    }
-
-    // Dokument erstellen
-    const questionSet = {
+    // Frage erstellen
+    const questionRef = await db.collection("questions").add({
       questionText,
-      answers,
+      correctAnswerId: "", // Platzhalter, wird nach Erstellung der Antworten gesetzt
+    });
+
+    // Antworten hinzufügen
+    let correctAnswerId = "";
+    for (const answerText of answers) {
+      const answerRef = await questionRef.collection("answers").add({
+        text: answerText,
+      } as AnswerData); // Nutze das AnswerData Interface
+      if (answerText === correctAnswerText) {
+        correctAnswerId = answerRef.id;
+      }
+    }
+
+    // Aktualisiere die Frage mit der richtigen Antwort-ID
+    await questionRef.update({
       correctAnswerId,
-      createdAt: FieldValue.serverTimestamp(),
-    };
+    });
 
-    const docRef = await db.collection("questions").add(questionSet);
-
-    // Erfolgsantwort mit der generierten ID
     res.status(201).json({
       message: "Question set created successfully.",
-      id: docRef.id,
+      questionId: questionRef.id,
     });
   } catch (error) {
-    res.status(500).json({error: "Error creating question set: " + error.message});
+    console.error("Error in createQuestionSet:", error.message);
+    res.status(500).json({ error: "Error creating question set: " + error.message });
   }
 });
+
+
+
 
 export const joinDuel = functions.https.onRequest(async (req, res) => {
   try {
@@ -334,7 +339,11 @@ export const joinDuel = functions.https.onRequest(async (req, res) => {
         },
         { merge: true }
       );
-      res.status(200).json({ message: "You have been added to the queue." });
+      // res.status(200).json({ message: "You have been added to the queue." });
+      res.status(200).json({ 
+        message: "You have been added to the queue.", 
+        queue: queueDoc.data()?.openDuels || [] 
+      });
       return;
     }
 
@@ -402,33 +411,37 @@ export const joinDuel = functions.https.onRequest(async (req, res) => {
   }
 });
 
+
   
 
 
 async function sendNotification(
-  userRef: FirebaseFirestore.DocumentReference, // Erwartet jetzt DocumentReference
+  userRef: FirebaseFirestore.DocumentReference, // Erwartet DocumentReference
   title: string,
   body: string,
   data?: Record<string, any>
 ) {
   try {
-    // Hole den Benutzer-Dokumentinhalt basierend auf der Reference
+    // Benutzer-Dokument abrufen
     const userDoc = await userRef.get();
+    if (!userDoc.exists) {
+      console.log(`User document ${userRef.id} not found.`);
+      return;
+    }
+
     const userData = userDoc.data();
     const fcmToken = userData?.fcmToken;
 
+    // Überprüfen, ob FCM-Token vorhanden ist
     if (!fcmToken) {
       console.log(`User ${userRef.id} has no FCM token.`);
       return;
     }
 
-    // Erstelle die Nachricht
+    // Nachricht erstellen
     const message = {
       token: fcmToken,
-      notification: {
-        title: title,
-        body: body,
-      },
+      notification: { title, body },
       data: data || {},
     };
 
@@ -437,6 +450,7 @@ async function sendNotification(
     console.log(`Notification sent to user ${userRef.id}: ${title}`);
   } catch (error) {
     console.error(`Error sending notification to user ${userRef.id}:`, error.message);
+    throw new Error("Notification sending failed: " + error.message);
   }
 }
 
@@ -482,8 +496,8 @@ export const answerQuestion = functions.https.onRequest(async (req, res) => {
     const questionDoc = await questionRef.get();
     const questionData = questionDoc.data() as QuestionData;
 
-    if (!questionData || !questionData.answers) {
-      res.status(500).json({ error: "Invalid question data. Please check the questionId." });
+    if (!questionData) {
+      res.status(500).json({ error: "Invalid question data." });
       return;
     }
 
@@ -500,7 +514,9 @@ export const answerQuestion = functions.https.onRequest(async (req, res) => {
     // Feedback an den Spieler
     const feedbackMessage = isCorrect
       ? "Richtig beantwortet! Gut gemacht."
-      : `Falsch beantwortet. Die richtige Antwort ist: "${questionData.answers.find((a) => a.id === correctAnswerId)?.text || "Unbekannt"}"`;
+      : `Falsch beantwortet. Die richtige Antwort ist: "${
+          (await questionRef.collection("answers").doc(correctAnswerId).get()).data()?.text || "Unbekannt"
+        }"`;
 
     await sendNotification(userRef, isCorrect ? "Richtig!" : "Falsch!", feedbackMessage, {
       roundId,
@@ -520,6 +536,7 @@ export const answerQuestion = functions.https.onRequest(async (req, res) => {
       } else if (player2Correct > player1Correct) {
         duelData.scorePlayer2++;
       } else {
+        // Unentschieden
         duelData.scorePlayer1++;
         duelData.scorePlayer2++;
       }
@@ -572,41 +589,43 @@ export const answerQuestion = functions.https.onRequest(async (req, res) => {
 
     res.status(200).json({ message: "Answer processed successfully.", isCorrect });
   } catch (error) {
+    console.error("Error in answerQuestion:", error.message);
     res.status(500).json({ error: "Error processing answer: " + error.message });
   }
 });
 
 
 
-
 // Typen
-interface DuelData {
-  player1: FirebaseFirestore.DocumentReference;
-  player2: FirebaseFirestore.DocumentReference;
-  currentTurn: FirebaseFirestore.DocumentReference;
-  currentRound: number;
-  scorePlayer1: number;
-  scorePlayer2: number;
-  status: string;
-  classroomRef: FirebaseFirestore.DocumentReference;
-  rounds: string[];
-}
-
-interface RoundData {
-  duelRef: FirebaseFirestore.DocumentReference;
-  roundNumber: number;
-  player1Answers: PlayerAnswer[];
-  player2Answers: PlayerAnswer[];
+interface AnswerData {
+  text: string; // Text der Antwort
 }
 
 interface QuestionData {
-  correctAnswerId: string;
-  questionText: string;
-  answers: Array<{ id: string; text: string }>;
+  questionText: string; // Die Frage
+  correctAnswerId: string; // ID der korrekten Antwort
 }
 
 interface PlayerAnswer {
-  ref: FirebaseFirestore.DocumentReference;
-  status: string;
+  ref: FirebaseFirestore.DocumentReference<AnswerData>; // Referenz zur Antwort
+  status: string; // "unanswered", "correct", "incorrect"
 }
 
+interface RoundData {
+  duelRef: FirebaseFirestore.DocumentReference; // Referenz zum Duell
+  roundNumber: number; // Nummer der Runde
+  player1Answers: PlayerAnswer[]; // Antworten von Spieler 1
+  player2Answers: PlayerAnswer[]; // Antworten von Spieler 2
+}
+
+interface DuelData {
+  player1: FirebaseFirestore.DocumentReference; // Spieler 1
+  player2: FirebaseFirestore.DocumentReference; // Spieler 2
+  currentTurn: FirebaseFirestore.DocumentReference; // Wer ist dran?
+  currentRound: number; // Aktuelle Runde
+  scorePlayer1: number; // Punkte von Spieler 1
+  scorePlayer2: number; // Punkte von Spieler 2
+  status: string; // Status des Duells ("active", "finished")
+  classroomRef: FirebaseFirestore.DocumentReference; // Referenz zum Klassenraum
+  rounds: string[]; // Array von Runden-IDs
+}
