@@ -2,7 +2,7 @@
 
 import * as functions from "firebase-functions";
 import * as admin from "firebase-admin";
-import {FieldValue} from "firebase-admin/firestore"; // Import Firestore-spezifischer Methoden
+import { FieldValue } from "firebase-admin/firestore"; // Import Firestore-spezifischer Methoden
 
 
 admin.initializeApp();
@@ -43,21 +43,21 @@ export const getUniversities = functions.https.onRequest(async (req, res) => {
 // API: Eine neue Universität erstellen
 export const createUniversity = functions.https.onRequest(async (req, res) => {
   try {
-    const {name, location} = req.body;
+    const { name, location } = req.body;
 
     if (!name) {
-      res.status(400).json({error: "Name is required"});
+      res.status(400).json({ error: "Name is required" });
       return;
     }
 
-    const universityRef = await db.collection("universities").add({name, location});
+    const universityRef = await db.collection("universities").add({ name, location });
 
     res.status(201).json({
       id: universityRef.id,
       message: "University created",
     });
   } catch (error) {
-    res.status(500).json({error: "Error creating university: " + error.message});
+    res.status(500).json({ error: "Error creating university: " + error.message });
   }
 });
 
@@ -122,10 +122,10 @@ export const getCourses = functions.https.onRequest(async (req, res) => {
 // API: Einen neuen Nutzer erstellen
 export const createUser = functions.https.onRequest(async (req, res) => {
   try {
-    const {email, password, displayName} = req.body;
+    const { email, password, displayName } = req.body;
 
     if (!email || !password) {
-      res.status(400).json({error: "Email and password are required"});
+      res.status(400).json({ error: "Email and password are required" });
       return;
     }
 
@@ -148,17 +148,17 @@ export const createUser = functions.https.onRequest(async (req, res) => {
       message: "User created successfully",
     });
   } catch (error) {
-    res.status(500).json({error: "Error creating user: " + error.message});
+    res.status(500).json({ error: "Error creating user: " + error.message });
   }
 });
 
 // API: Nutzerdaten abrufen
 export const getUserData = functions.https.onRequest(async (req, res) => {
   try {
-    const {uid} = req.query;
+    const { uid } = req.query;
 
     if (!uid) {
-      res.status(400).json({error: "User ID (uid) is required"});
+      res.status(400).json({ error: "User ID (uid) is required" });
       return;
     }
 
@@ -166,13 +166,13 @@ export const getUserData = functions.https.onRequest(async (req, res) => {
     const userDoc = await db.collection("users").doc(uid as string).get();
 
     if (!userDoc.exists) {
-      res.status(404).json({error: "User not found"});
+      res.status(404).json({ error: "User not found" });
       return;
     }
 
     res.status(200).json(userDoc.data());
   } catch (error) {
-    res.status(500).json({error: "Error fetching user data: " + error.message});
+    res.status(500).json({ error: "Error fetching user data: " + error.message });
   }
 });
 
@@ -284,22 +284,28 @@ export const createQuestionSet = functions.https.onRequest(async (req, res) => {
     const questionRef = await db.collection("questions").add({
       questionText,
       correctAnswerId: "", // Platzhalter, wird nach Erstellung der Antworten gesetzt
+      answers: [], // Platzhalter für die Referenzen auf die Antworten
     });
 
-    // Antworten hinzufügen
+    // Antworten hinzufügen und Referenzen speichern
+    const answerRefs: FirebaseFirestore.DocumentReference[] = [];
     let correctAnswerId = "";
     for (const answerText of answers) {
-      const answerRef = await questionRef.collection("answers").add({
+      const answerRef = await db.collection("answers").add({
         text: answerText,
-      } as AnswerData); // Nutze das AnswerData Interface
+        questionRef, // Referenz zur Frage
+      });
+      answerRefs.push(answerRef);
+
       if (answerText === correctAnswerText) {
         correctAnswerId = answerRef.id;
       }
     }
 
-    // Aktualisiere die Frage mit der richtigen Antwort-ID
+    // Frage aktualisieren mit Referenzen auf die Antworten und korrekter Antwort-ID
     await questionRef.update({
       correctAnswerId,
+      answers: answerRefs, // Speichern der Antwortreferenzen
     });
 
     res.status(201).json({
@@ -311,7 +317,6 @@ export const createQuestionSet = functions.https.onRequest(async (req, res) => {
     res.status(500).json({ error: "Error creating question set: " + error.message });
   }
 });
-
 
 
 
@@ -339,10 +344,8 @@ export const joinDuel = functions.https.onRequest(async (req, res) => {
         },
         { merge: true }
       );
-      // res.status(200).json({ message: "You have been added to the queue." });
-      res.status(200).json({ 
-        message: "You have been added to the queue.", 
-        queue: queueDoc.data()?.openDuels || [] 
+      res.status(200).json({
+        message: "You have been added to the queue.",
       });
       return;
     }
@@ -363,27 +366,43 @@ export const joinDuel = functions.https.onRequest(async (req, res) => {
       currentTurn: opponentRef,
       scorePlayer1: 0,
       scorePlayer2: 0,
-      createdAt: FieldValue.serverTimestamp(),
     });
+
+    // Generiere geteilte Fragen für die Runden
+    const generateSharedQuestions = async (questionIds: string[]): Promise<PlayerAnswer[]> => {
+      const questions: PlayerAnswer[] = [];
+
+      for (const questionId of questionIds) {
+        const questionRef = db.collection("questions").doc(questionId);
+
+        // Hole die Antworten aus der "answers"-Collection
+        const answersSnapshot = await db.collection("answers").where("questionRef", "==", questionRef).get();
+
+        answersSnapshot.docs.forEach((answerDoc) => {
+          questions.push({
+            ref: answerDoc.ref as FirebaseFirestore.DocumentReference<AnswerData>, // Typisierung sicherstellen
+            status: "unanswered",
+          });
+        });
+      }
+
+      return questions;
+    };
+
+    // Hole 15 zufällige Fragen (für 5 Runden, 3 Fragen pro Runde)
+    const questionsSnapshot = await db.collection("questions").orderBy("createdAt").limit(15).get();
+    const questionIds = questionsSnapshot.docs.map((doc) => doc.id);
 
     // Erstelle Runden als separate Dokumente
     const roundRefs = [];
     for (let i = 1; i <= 5; i++) {
-      const player1Questions = (await db.collection("questions").orderBy("createdAt").limit(3).get()).docs.map((doc) => ({
-        ref: doc.ref,
-        status: "unanswered",
-      }));
-
-      const player2Questions = (await db.collection("questions").orderBy("createdAt").limit(3).get()).docs.map((doc) => ({
-        ref: doc.ref,
-        status: "unanswered",
-      }));
+      const sharedQuestions = await generateSharedQuestions(questionIds.slice((i - 1) * 3, i * 3));
 
       const roundRef = await db.collection("rounds").add({
         duelRef,
         roundNumber: i,
-        player1Answers: player1Questions,
-        player2Answers: player2Questions,
+        player1Answers: sharedQuestions,
+        player2Answers: sharedQuestions,
       });
       roundRefs.push(roundRef);
     }
@@ -412,7 +431,12 @@ export const joinDuel = functions.https.onRequest(async (req, res) => {
 });
 
 
-  
+/**
+ * Generiert eine Liste von Fragen, die in einer Runde geteilt werden.
+ */
+
+
+
 
 
 async function sendNotification(
@@ -490,7 +514,10 @@ export const answerQuestion = functions.https.onRequest(async (req, res) => {
     // Überprüfen, ob der Benutzer Spieler 1 ist
     const isPlayer1 = userRef.isEqual(duelData.player1);
     const answersKey = isPlayer1 ? "player1Answers" : "player2Answers";
+    const opponentKey = isPlayer1 ? "player2Answers" : "player1Answers";
+
     const answers = roundData[answersKey];
+    const opponentAnswers = roundData[opponentKey];
 
     // Frage-Dokument abrufen
     const questionDoc = await questionRef.get();
@@ -501,12 +528,25 @@ export const answerQuestion = functions.https.onRequest(async (req, res) => {
       return;
     }
 
-    const correctAnswerId = questionData.correctAnswerId;
-    const isCorrect = correctAnswerId === answerId;
+    // Richtige Antwort abrufen
+    const correctAnswerDoc = await db
+      .collection("answers")
+      .doc(questionData.correctAnswerId)
+      .get();
+
+    if (!correctAnswerDoc.exists) {
+      res.status(500).json({ error: "Correct answer not found." });
+      return;
+    }
+
+    const correctAnswer = correctAnswerDoc.data() as AnswerData;
+    const isCorrect = correctAnswerDoc.id === answerId;
 
     // Antwort aktualisieren
     const updatedAnswers = answers.map((answer: PlayerAnswer) =>
-      answer.ref.isEqual(questionRef) ? { ...answer, status: isCorrect ? "correct" : "incorrect" } : answer
+      answer.ref.isEqual(questionRef)
+        ? { ...answer, status: isCorrect ? "correct" : "incorrect" }
+        : answer
     );
 
     roundData[answersKey] = updatedAnswers;
@@ -514,66 +554,96 @@ export const answerQuestion = functions.https.onRequest(async (req, res) => {
     // Feedback an den Spieler
     const feedbackMessage = isCorrect
       ? "Richtig beantwortet! Gut gemacht."
-      : `Falsch beantwortet. Die richtige Antwort ist: "${
-          (await questionRef.collection("answers").doc(correctAnswerId).get()).data()?.text || "Unbekannt"
-        }"`;
+      : `Falsch beantwortet. Die richtige Antwort ist: "${correctAnswer.text}"`;
 
     await sendNotification(userRef, isCorrect ? "Richtig!" : "Falsch!", feedbackMessage, {
       roundId,
       questionId: questionRef.id,
     });
 
-    // Prüfen, ob alle Fragen beantwortet wurden
-    const allAnswered = updatedAnswers.every((answer: PlayerAnswer) => answer.status !== "unanswered");
+    // Prüfen, ob alle Fragen der aktuellen Spieler beantwortet wurden
+    const allAnsweredByPlayer = updatedAnswers.every(
+      (answer: PlayerAnswer) => answer.status !== "unanswered"
+    );
 
-    if (allAnswered) {
-      // Punkte der Runde berechnen
-      const player1Correct = roundData.player1Answers.filter((a) => a.status === "correct").length;
-      const player2Correct = roundData.player2Answers.filter((a) => a.status === "correct").length;
+    if (allAnsweredByPlayer) {
+      // Wenn beide Spieler ihre Fragen beantwortet haben, werten wir die Runde aus
+      const allOpponentAnswered = opponentAnswers.every(
+        (answer: PlayerAnswer) => answer.status !== "unanswered"
+      );
 
-      if (player1Correct > player2Correct) {
-        duelData.scorePlayer1++;
-      } else if (player2Correct > player1Correct) {
-        duelData.scorePlayer2++;
-      } else {
-        // Unentschieden
-        duelData.scorePlayer1++;
-        duelData.scorePlayer2++;
-      }
+      if (allOpponentAnswered) {
+        // Punkte der Runde berechnen
+        const player1Correct = roundData.player1Answers.filter((a) => a.status === "correct").length;
+        const player2Correct = roundData.player2Answers.filter((a) => a.status === "correct").length;
 
-      // Runde abgeschlossen -> Update im Duell
-      const isLastRound = roundData.roundNumber === 5;
-
-      if (isLastRound) {
-        duelData.status = "finished";
-
-        // Gewinner ermitteln
-        const player1Score = duelData.scorePlayer1;
-        const player2Score = duelData.scorePlayer2;
-
-        let winnerMessage = "";
-        let loserMessage = "";
-        if (player1Score > player2Score) {
-          winnerMessage = `Herzlichen Glückwunsch! Du hast das Duell gewonnen. Endstand: ${player1Score}:${player2Score}`;
-          loserMessage = `Schade, du hast das Duell verloren. Endstand: ${player2Score}:${player1Score}`;
-          await sendNotification(duelData.player1, "Du hast gewonnen!", winnerMessage, { duelId: duelRef.id });
-          await sendNotification(duelData.player2, "Du hast verloren!", loserMessage, { duelId: duelRef.id });
-        } else if (player2Score > player1Score) {
-          winnerMessage = `Herzlichen Glückwunsch! Du hast das Duell gewonnen. Endstand: ${player2Score}:${player1Score}`;
-          loserMessage = `Schade, du hast das Duell verloren. Endstand: ${player1Score}:${player2Score}`;
-          await sendNotification(duelData.player2, "Du hast gewonnen!", winnerMessage, { duelId: duelRef.id });
-          await sendNotification(duelData.player1, "Du hast verloren!", loserMessage, { duelId: duelRef.id });
+        if (player1Correct > player2Correct) {
+          duelData.scorePlayer1++;
+        } else if (player2Correct > player1Correct) {
+          duelData.scorePlayer2++;
         } else {
-          const drawMessage = `Unentschieden! Endstand: ${player1Score}:${player2Score}`;
-          await sendNotification(duelData.player1, "Unentschieden!", drawMessage, { duelId: duelRef.id });
-          await sendNotification(duelData.player2, "Unentschieden!", drawMessage, { duelId: duelRef.id });
+          // Unentschieden
+          duelData.scorePlayer1++;
+          duelData.scorePlayer2++;
         }
-      } else {
-        duelData.currentRound++;
-        duelData.currentTurn = duelData.currentRound % 2 === 0 ? duelData.player2 : duelData.player1;
 
-        await sendNotification(duelData.player1, "Runde abgeschlossen!", "Die nächste Runde beginnt.", { duelId: duelRef.id });
-        await sendNotification(duelData.player2, "Runde abgeschlossen!", "Die nächste Runde beginnt.", { duelId: duelRef.id });
+        // Runde abgeschlossen -> Update im Duell
+        const isLastRound = roundData.roundNumber === 5;
+
+        if (isLastRound) {
+          duelData.status = "finished";
+
+          // Gewinner ermitteln
+          const player1Score = duelData.scorePlayer1;
+          const player2Score = duelData.scorePlayer2;
+
+          let winnerMessage = "";
+          let loserMessage = "";
+          if (player1Score > player2Score) {
+            winnerMessage = `Herzlichen Glückwunsch! Du hast das Duell gewonnen. Endstand: ${player1Score}:${player2Score}`;
+            loserMessage = `Schade, du hast das Duell verloren. Endstand: ${player2Score}:${player1Score}`;
+            await sendNotification(duelData.player1, "Du hast gewonnen!", winnerMessage, {
+              duelId: duelRef.id,
+            });
+            await sendNotification(duelData.player2, "Du hast verloren!", loserMessage, {
+              duelId: duelRef.id,
+            });
+          } else if (player2Score > player1Score) {
+            winnerMessage = `Herzlichen Glückwunsch! Du hast das Duell gewonnen. Endstand: ${player2Score}:${player1Score}`;
+            loserMessage = `Schade, du hast das Duell verloren. Endstand: ${player1Score}:${player2Score}`;
+            await sendNotification(duelData.player2, "Du hast gewonnen!", winnerMessage, {
+              duelId: duelRef.id,
+            });
+            await sendNotification(duelData.player1, "Du hast verloren!", loserMessage, {
+              duelId: duelRef.id,
+            });
+          } else {
+            const drawMessage = `Unentschieden! Endstand: ${player1Score}:${player2Score}`;
+            await sendNotification(duelData.player1, "Unentschieden!", drawMessage, {
+              duelId: duelRef.id,
+            });
+            await sendNotification(duelData.player2, "Unentschieden!", drawMessage, {
+              duelId: duelRef.id,
+            });
+          }
+        } else {
+          duelData.currentRound++;
+          duelData.currentTurn =
+            duelData.currentRound % 2 === 0 ? duelData.player2 : duelData.player1;
+
+          await sendNotification(
+            duelData.player1,
+            "Runde abgeschlossen!",
+            "Die nächste Runde beginnt.",
+            { duelId: duelRef.id }
+          );
+          await sendNotification(
+            duelData.player2,
+            "Runde abgeschlossen!",
+            "Die nächste Runde beginnt.",
+            { duelId: duelRef.id }
+          );
+        }
       }
     }
 
@@ -599,11 +669,13 @@ export const answerQuestion = functions.https.onRequest(async (req, res) => {
 // Typen
 interface AnswerData {
   text: string; // Text der Antwort
+  questionRef: FirebaseFirestore.DocumentReference; // Referenz zur zugehörigen Frage
 }
 
 interface QuestionData {
   questionText: string; // Die Frage
   correctAnswerId: string; // ID der korrekten Antwort
+  answers: FirebaseFirestore.DocumentReference[]; // Array mit Referenzen auf die Antwortdokumente
 }
 
 interface PlayerAnswer {
