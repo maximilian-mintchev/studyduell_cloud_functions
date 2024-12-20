@@ -199,10 +199,11 @@ exports.joinCourse = functions.https.onRequest(async (req, res) => {
     let classroomId;
 
     if (classroomSnapshot.empty) {
-      // Create new classroom if not exists
+      // Create new classroom if it doesn't exist
       const newClassroom = await db.collection("classrooms").add({
         courseRef, // Store the course reference here
         members: [userRef], // Store user references instead of IDs
+        waitingPlayer: null, // Initialize waitingPlayer as null
       });
 
       classroomId = newClassroom.id;
@@ -211,20 +212,17 @@ exports.joinCourse = functions.https.onRequest(async (req, res) => {
       await newClassroom.update({
         classroomId,
       });
-
-      // Create duelQueueCollection for this classroom
-      await db.collection("duelQueue").doc(classroomId).set({
-        classroomRef: newClassroom,
-        openDuels: [], // Initialize with an empty array
-      });
     } else {
       // Add user to existing classroom
       const classroomDoc = classroomSnapshot.docs[0];
       classroomId = classroomDoc.id;
+
+      // Update members array with the new user
       await classroomDoc.ref.update({
         members: FieldValue.arrayUnion(userRef),
       });
     }
+    res.set('Access-Control-Allow-Origin', '*');
 
     res.status(200).json({
       classroomId, // Return only the document ID
@@ -235,6 +233,7 @@ exports.joinCourse = functions.https.onRequest(async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
 
 
 
@@ -339,44 +338,62 @@ export const createQuestionSet = functions.https.onRequest(async (req, res) => {
 
 
 
-  export const joinDuel = functions.https.onRequest(async (req, res) => {
-    try {
-      const { userId, classroomId } = req.body;
+export const joinDuel = functions.https.onRequest(async (req, res) => {
+  try {
+    const { userId, classroomId } = req.body;
 
-      if (!userId || !classroomId) {
-        res.status(400).json({ error: "userId and classroomId are required" });
-        return;
+    if (!userId || !classroomId) {
+      res.status(400).json({ error: "userId and classroomId are required" });
+      return;
+    }
+
+    const userRef = db.collection("users").doc(userId);
+    const classroomRef = db.collection("classrooms").doc(classroomId);
+
+    // Nutze eine Transaktion, um Race-Conditions zu verhindern
+    const result = await db.runTransaction(async (transaction) => {
+      const classroomDoc = await transaction.get(classroomRef);
+
+      if (!classroomDoc.exists) {
+        throw new Error("Classroom not found.");
       }
 
-      const userRef = db.collection("users").doc(userId);
-      const classroomRef = db.collection("classrooms").doc(classroomId);
+      const classroomData = classroomDoc.data();
 
-      const queueRef = db.collection("duelQueue").doc(classroomId);
-      const queueDoc = await queueRef.get();
-
-      // Spieler zur Warteschlange hinzufügen, wenn sie leer ist
-      if (!queueDoc.exists || !queueDoc.data()?.openDuels?.length) {
-        await queueRef.set(
-          {
-            classroomRef,
-            openDuels: FieldValue.arrayUnion(userRef),
-          },
-          { merge: true }
-        );
-        res.status(200).json({
-          message: "You have been added to the queue.",
+      if (!classroomData?.waitingPlayer) {
+        // Kein wartender Spieler -> Spieler wird zur Warteschlange hinzugefügt
+        transaction.update(classroomRef, {
+          waitingPlayer: userRef, // Spieler, der wartet
         });
-        return;
+        return { status: "waiting", message: "You have been added to the queue." };
       }
 
-      const openDuels: FirebaseFirestore.DocumentReference[] = queueDoc.data()?.openDuels || [];
-      const opponentRef = openDuels[0];
-      await queueRef.update({
-        openDuels: FieldValue.arrayRemove(opponentRef),
+      // Ein Spieler wartet bereits -> Match mit dem wartenden Spieler
+      const opponentRef = classroomData.waitingPlayer;
+
+      // Entferne den wartenden Spieler
+      transaction.update(classroomRef, {
+        waitingPlayer: FieldValue.delete(),
       });
 
-      // Neues Duell erstellen
-      const duelRef = await db.collection("duels").add({
+      return { status: "matched", opponentRef };
+    });
+
+    if (result.status === "waiting") {
+      // Spieler wurde zur Warteschlange hinzugefügt
+      res.status(200).json({
+        message: result.message,
+        duelId: null, // Kein Duell erstellt
+      });
+      return;
+    }
+
+    // Ein Duell wurde erstellt
+    const opponentRef = result.opponentRef;
+
+    // Neues Duell erstellen
+      const duelRef = db.collection("duels").doc();
+      const duelData = {
         classroomRef,
         player1: opponentRef,
         player2: userRef,
@@ -385,69 +402,74 @@ export const createQuestionSet = functions.https.onRequest(async (req, res) => {
         currentTurn: opponentRef,
         scorePlayer1: 0,
         scorePlayer2: 0,
-      });
-
-      // Generiere geteilte Fragen für die Runden
-      const generateSharedQuestions = async (questionIds: string[]): Promise<PlayerAnswer[]> => {
-        const questions: PlayerAnswer[] = [];
-
-        for (const questionId of questionIds) {
-          const questionRef = db.collection("questions").doc(questionId);
-
-          // Hole die Antworten aus der "answers"-Collection
-          const answersSnapshot = await db.collection("answers").where("questionRef", "==", questionRef).get();
-
-          answersSnapshot.docs.forEach((answerDoc) => {
-            questions.push({
-              ref: answerDoc.ref as FirebaseFirestore.DocumentReference<AnswerData>, // Typisierung sicherstellen
-              status: "unanswered",
-            });
-          });
-        }
-
-        return questions;
+        duelId: duelRef.id, // Speichere die DocumentId direkt im Objekt
       };
 
-      // Hole 15 zufällige Fragen (für 5 Runden, 3 Fragen pro Runde)
-      const questionsSnapshot = await db.collection("questions").orderBy("createdAt").limit(15).get();
-      const questionIds = questionsSnapshot.docs.map((doc) => doc.id);
+    await duelRef.set(duelData);
 
-      // Erstelle Runden als separate Dokumente
-      const roundRefs = [];
-      for (let i = 1; i <= 5; i++) {
-        const sharedQuestions = await generateSharedQuestions(questionIds.slice((i - 1) * 3, i * 3));
+    // Generiere geteilte Fragen für die Runden
+    const generateSharedQuestions = async (questionIds: string[]): Promise<PlayerAnswer[]> => {
+      const questions: PlayerAnswer[] = [];
 
-        const roundRef = await db.collection("rounds").add({
-          duelRef,
-          roundNumber: i,
-          player1Answers: sharedQuestions,
-          player2Answers: sharedQuestions,
+      for (const questionId of questionIds) {
+        const questionRef = db.collection("questions").doc(questionId);
+
+        // Hole die Antworten aus der "answers"-Collection
+        const answersSnapshot = await db.collection("answers").where("questionRef", "==", questionRef).get();
+
+        answersSnapshot.docs.forEach((answerDoc) => {
+          questions.push({
+            ref: answerDoc.ref as FirebaseFirestore.DocumentReference<AnswerData>, // Typisierung sicherstellen
+            status: "unanswered",
+          });
         });
-        roundRefs.push(roundRef);
       }
 
-      // Rundenreferenzen im Duell speichern
-      await duelRef.update({
-        rounds: roundRefs.map((ref) => ref.id),
-      });
+      return questions;
+    };
 
-      // Spieler benachrichtigen
-      await sendNotification(opponentRef, "Du bist dran!", "Das Duell wurde gestartet. Beantworte deine erste Frage.", {
-        duelId: duelRef.id,
-      });
-      await sendNotification(userRef, "Warten auf Spieler 1", "Das Duell wurde gestartet. Dein Gegner beginnt.", {
-        duelId: duelRef.id,
-      });
+    // Hole 15 zufällige Fragen (für 5 Runden, 3 Fragen pro Runde)
+    const questionsSnapshot = await db.collection("questions").orderBy("createdAt").limit(15).get();
+    const questionIds = questionsSnapshot.docs.map((doc) => doc.id);
 
-      res.status(200).json({
-        message: "Duel created successfully",
-        duelId: duelRef.id,
+    // Erstelle Runden als separate Dokumente
+    const roundRefs = [];
+    for (let i = 1; i <= 5; i++) {
+      const sharedQuestions = await generateSharedQuestions(questionIds.slice((i - 1) * 3, i * 3));
+
+      const roundRef = await db.collection("rounds").add({
+        duelRef,
+        roundNumber: i,
+        player1Answers: sharedQuestions,
+        player2Answers: sharedQuestions,
       });
-    } catch (error) {
-      console.error("Error in joinDuel:", error.message);
-      res.status(500).json({ error: "Error joining duel: " + error.message });
+      roundRefs.push(roundRef);
     }
-  });
+
+    // Rundenreferenzen im Duell speichern
+    await duelRef.update({
+      rounds: roundRefs.map((ref) => ref.id),
+    });
+
+    // Spieler benachrichtigen
+    await sendNotification(opponentRef, "Du bist dran!", "Das Duell wurde gestartet. Beantworte deine erste Frage.", {
+      duelId: duelRef.id,
+    });
+    await sendNotification(userRef, "Warten auf Spieler 1", "Das Duell wurde gestartet. Dein Gegner beginnt.", {
+      duelId: duelRef.id,
+    });
+
+    res.status(200).json({
+      message: "Duel created successfully",
+      duelId: duelRef.id,
+    });
+  } catch (error) {
+    console.error("Error in joinDuel:", error.message);
+    res.status(500).json({ error: "Error joining duel: " + error.message });
+  }
+});
+
+
 
 
 /**
