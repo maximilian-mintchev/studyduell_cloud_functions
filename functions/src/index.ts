@@ -289,42 +289,41 @@ export const getClassroom = functions.https.onRequest(async (req, res) => {
 
 export const createQuestionSet = functions.https.onRequest(async (req, res) => {
   try {
-    const { questionText, answers, correctAnswerText } = req.body;
+    const { questionText, answers, correctAnswerIndex } = req.body;
 
-    if (!questionText || !Array.isArray(answers) || answers.length !== 4 || !correctAnswerText) {
+    // Eingabe validieren
+    if (
+      !questionText ||
+      !Array.isArray(answers) ||
+      answers.length !== 4 ||
+      correctAnswerIndex === undefined ||
+      correctAnswerIndex < 0 ||
+      correctAnswerIndex > 3
+    ) {
       res.status(400).json({
-        error: "Invalid input. Provide 'questionText', an array of 4 'answers', and a 'correctAnswerText'.",
+        error:
+          "Invalid input. Provide 'questionText', an array of 4 'answers', and a valid 'correctAnswerIndex' (0-3).",
       });
       return;
     }
 
-    // Frage erstellen
-    const questionRef = await db.collection("questions").add({
+    // IDs für die Antworten (1, 2, 3, 4)
+    const formattedAnswers = answers.map((answerText, index) => ({
+      id: (index + 1).toString(), // IDs: "1", "2", "3", "4"
+      text: answerText,
+    }));
+
+    // ID der korrekten Antwort basierend auf dem Index
+    const correctAnswerId = (correctAnswerIndex + 1).toString();
+
+    // Frage mit Antworten speichern
+    const questionData = {
       questionText,
-      correctAnswerId: "", // Platzhalter, wird nach Erstellung der Antworten gesetzt
-      answers: [], // Platzhalter für die Referenzen auf die Antworten
-    });
+      correctAnswerId, // Speichern der ID der korrekten Antwort
+      answers: formattedAnswers, // Antworten direkt als Array von Objekten speichern
+    };
 
-    // Antworten hinzufügen und Referenzen speichern
-    const answerRefs: FirebaseFirestore.DocumentReference[] = [];
-    let correctAnswerId = "";
-    for (const answerText of answers) {
-      const answerRef = await db.collection("answers").add({
-        text: answerText,
-        questionRef, // Referenz zur Frage
-      });
-      answerRefs.push(answerRef);
-
-      if (answerText === correctAnswerText) {
-        correctAnswerId = answerRef.id;
-      }
-    }
-
-    // Frage aktualisieren mit Referenzen auf die Antworten und korrekter Antwort-ID
-    await questionRef.update({
-      correctAnswerId,
-      answers: answerRefs, // Speichern der Antwortreferenzen
-    });
+    const questionRef = await db.collection("questions").add(questionData);
 
     res.status(201).json({
       message: "Question set created successfully.",
@@ -335,6 +334,121 @@ export const createQuestionSet = functions.https.onRequest(async (req, res) => {
     res.status(500).json({ error: "Error creating question set: " + error.message });
   }
 });
+
+export const createExampleQuestionSets = functions.https.onRequest(async (req, res) => {
+  try {
+    // Beispiel-Fragesets
+    const exampleQuestions = [
+      {
+        questionText: "What is the capital of France?",
+        answers: ["Berlin", "Madrid", "Paris", "Rome"],
+        correctAnswerIndex: 2,
+      },
+      {
+        questionText: "What is 2 + 2?",
+        answers: ["3", "4", "5", "6"],
+        correctAnswerIndex: 1,
+      },
+      {
+        questionText: "Who wrote 'To Kill a Mockingbird'?",
+        answers: ["Harper Lee", "J.K. Rowling", "Ernest Hemingway", "Mark Twain"],
+        correctAnswerIndex: 0,
+      },
+      {
+        questionText: "What is the chemical symbol for water?",
+        answers: ["H2O", "O2", "CO2", "NaCl"],
+        correctAnswerIndex: 0,
+      },
+      {
+        questionText: "Which planet is known as the Red Planet?",
+        answers: ["Venus", "Mars", "Jupiter", "Saturn"],
+        correctAnswerIndex: 1,
+      },
+      {
+        questionText: "Who painted the Mona Lisa?",
+        answers: ["Vincent van Gogh", "Leonardo da Vinci", "Pablo Picasso", "Claude Monet"],
+        correctAnswerIndex: 1,
+      },
+      {
+        questionText: "What is the tallest mountain in the world?",
+        answers: ["K2", "Mount Everest", "Kangchenjunga", "Lhotse"],
+        correctAnswerIndex: 1,
+      },
+      {
+        questionText: "What is the largest ocean on Earth?",
+        answers: ["Atlantic Ocean", "Indian Ocean", "Arctic Ocean", "Pacific Ocean"],
+        correctAnswerIndex: 3,
+      },
+      {
+        questionText: "What is the freezing point of water?",
+        answers: ["0°C", "32°F", "100°C", "212°F"],
+        correctAnswerIndex: 0,
+      },
+      {
+        questionText: "Who developed the theory of relativity?",
+        answers: ["Isaac Newton", "Albert Einstein", "Nikola Tesla", "Galileo Galilei"],
+        correctAnswerIndex: 1,
+      },
+      {
+        questionText: "What is the square root of 64?",
+        answers: ["6", "7", "8", "9"],
+        correctAnswerIndex: 2,
+      },
+      {
+        questionText: "Which country is famous for the Great Wall?",
+        answers: ["Japan", "India", "China", "Korea"],
+        correctAnswerIndex: 2,
+      },
+      {
+        questionText: "What is the currency of Japan?",
+        answers: ["Yen", "Won", "Dollar", "Euro"],
+        correctAnswerIndex: 0,
+      },
+      {
+        questionText: "Which animal is known as the King of the Jungle?",
+        answers: ["Tiger", "Lion", "Elephant", "Leopard"],
+        correctAnswerIndex: 1,
+      },
+      {
+        questionText: "What is the main ingredient in guacamole?",
+        answers: ["Tomato", "Avocado", "Onion", "Pepper"],
+        correctAnswerIndex: 1,
+      },
+    ];
+
+    // Batch-Erstellung von Fragen
+    const batch = db.batch();
+    const questionCollection = db.collection("questions");
+
+    exampleQuestions.forEach((question) => {
+      const questionRef = questionCollection.doc();
+      const formattedAnswers = question.answers.map((answerText, index) => ({
+        id: (index + 1).toString(),
+        text: answerText,
+      }));
+
+      const questionData = {
+        questionText: question.questionText,
+        correctAnswerId: (question.correctAnswerIndex + 1).toString(),
+        answers: formattedAnswers,
+      };
+
+      batch.set(questionRef, questionData);
+    });
+
+    // Batch speichern
+    await batch.commit();
+
+    res.status(201).json({
+      message: "15 example questions created successfully.",
+    });
+  } catch (error) {
+    console.error("Error creating example questions:", error.message);
+    res.status(500).json({ error: "Error creating example questions: " + error.message });
+  }
+});
+
+
 
 
 
@@ -350,7 +464,7 @@ export const joinDuel = functions.https.onRequest(async (req, res) => {
     const userRef = db.collection("users").doc(userId);
     const classroomRef = db.collection("classrooms").doc(classroomId);
 
-    // Nutze eine Transaktion, um Race-Conditions zu verhindern
+    // Transaktion verwenden, um Race-Conditions zu verhindern
     const result = await db.runTransaction(async (transaction) => {
       const classroomDoc = await transaction.get(classroomRef);
 
@@ -361,17 +475,17 @@ export const joinDuel = functions.https.onRequest(async (req, res) => {
       const classroomData = classroomDoc.data();
 
       if (!classroomData?.waitingPlayer) {
-        // Kein wartender Spieler -> Spieler wird zur Warteschlange hinzugefügt
+        // Kein wartender Spieler -> Spieler zur Warteschlange hinzufügen
         transaction.update(classroomRef, {
-          waitingPlayer: userRef, // Spieler, der wartet
+          waitingPlayer: userRef,
         });
         return { status: "waiting", message: "You have been added to the queue." };
       }
 
-      // Ein Spieler wartet bereits -> Match mit dem wartenden Spieler
+      // Ein Spieler wartet -> Match mit dem wartenden Spieler
       const opponentRef = classroomData.waitingPlayer;
 
-      // Entferne den wartenden Spieler
+      // Wartenden Spieler entfernen
       transaction.update(classroomRef, {
         waitingPlayer: FieldValue.delete(),
       });
@@ -380,7 +494,6 @@ export const joinDuel = functions.https.onRequest(async (req, res) => {
     });
 
     if (result.status === "waiting") {
-      // Spieler wurde zur Warteschlange hinzugefügt
       res.status(200).json({
         message: result.message,
         duelId: null, // Kein Duell erstellt
@@ -388,68 +501,52 @@ export const joinDuel = functions.https.onRequest(async (req, res) => {
       return;
     }
 
-    // Ein Duell wurde erstellt
     const opponentRef = result.opponentRef;
 
-    // Neues Duell erstellen
-      const duelRef = db.collection("duels").doc();
-      const duelData = {
-        classroomRef,
-        player1: opponentRef,
-        player2: userRef,
-        status: "active",
-        currentRound: 1,
-        currentTurn: opponentRef,
-        scorePlayer1: 0,
-        scorePlayer2: 0,
-        duelId: duelRef.id, // Speichere die DocumentId direkt im Objekt
-      };
+    // Funktion zum Generieren von Runden
+    const generateRounds = async (): Promise<any[]> => {
+      const questionsSnapshot = await db.collection("questions").limit(15).get();
+      const questions = questionsSnapshot.docs.map((doc) => ({
+        questionId: doc.id,
+        questionText: doc.data().questionText,
+        answers: doc.data().answers, // Antworten direkt in der Frage enthalten
+        correctAnswerId: doc.data().correctAnswerId, // ID der richtigen Antwort
+        currentAnswerId: null, // Zu Beginn keine Antwort ausgewählt
+      }));
 
-    await duelRef.set(duelData);
-
-    // Generiere geteilte Fragen für die Runden
-    const generateSharedQuestions = async (questionIds: string[]): Promise<PlayerAnswer[]> => {
-      const questions: PlayerAnswer[] = [];
-
-      for (const questionId of questionIds) {
-        const questionRef = db.collection("questions").doc(questionId);
-
-        // Hole die Antworten aus der "answers"-Collection
-        const answersSnapshot = await db.collection("answers").where("questionRef", "==", questionRef).get();
-
-        answersSnapshot.docs.forEach((answerDoc) => {
-          questions.push({
-            ref: answerDoc.ref as FirebaseFirestore.DocumentReference<AnswerData>, // Typisierung sicherstellen
-            status: "unanswered",
-          });
+      const rounds: any[] = [];
+      for (let i = 0; i < 5; i++) {
+        const roundQuestions = questions.slice(i * 3, i * 3 + 3);
+        rounds.push({
+          roundNumber: i,
+          currentQuestionIndex: 0, // Start bei der ersten Frage
+          player1Answers: roundQuestions.map((q) => ({ ...q, status: "unanswered" })),
+          player2Answers: roundQuestions.map((q) => ({ ...q, status: "unanswered" })),
         });
       }
 
-      return questions;
+      return rounds;
     };
 
-    // Hole 15 zufällige Fragen (für 5 Runden, 3 Fragen pro Runde)
-    const questionsSnapshot = await db.collection("questions").orderBy("createdAt").limit(15).get();
-    const questionIds = questionsSnapshot.docs.map((doc) => doc.id);
+    // Runden generieren
+    const rounds = await generateRounds();
 
-    // Erstelle Runden als separate Dokumente
-    const roundRefs = [];
-    for (let i = 1; i <= 5; i++) {
-      const sharedQuestions = await generateSharedQuestions(questionIds.slice((i - 1) * 3, i * 3));
+    // Neues Duell erstellen
+    const duelRef = db.collection("duels").doc();
+    const duelData: DuelData = {
+      classroomRef,
+      player1: opponentRef,
+      player2: userRef,
+      status: "active",
+      currentRound: 0, // Start bei der ersten Runde
+      currentTurn: opponentRef, // Der wartende Spieler beginnt
+      scorePlayer1: 0,
+      scorePlayer2: 0,
+      duelId: duelRef.id,
+      rounds,
+    };
 
-      const roundRef = await db.collection("rounds").add({
-        duelRef,
-        roundNumber: i,
-        player1Answers: sharedQuestions,
-        player2Answers: sharedQuestions,
-      });
-      roundRefs.push(roundRef);
-    }
-
-    // Rundenreferenzen im Duell speichern
-    await duelRef.update({
-      rounds: roundRefs.map((ref) => ref.id),
-    });
+    await duelRef.set(duelData);
 
     // Spieler benachrichtigen
     await sendNotification(opponentRef, "Du bist dran!", "Das Duell wurde gestartet. Beantworte deine erste Frage.", {
@@ -468,6 +565,7 @@ export const joinDuel = functions.https.onRequest(async (req, res) => {
     res.status(500).json({ error: "Error joining duel: " + error.message });
   }
 });
+
 
 
 
@@ -521,28 +619,20 @@ async function sendNotification(
 
 
 
+
 export const answerQuestion = functions.https.onRequest(async (req, res) => {
   try {
-    const { roundId, questionRef, userRef, answerId } = req.body;
+    const { duelId, userId, answerId } = req.body;
 
-    if (!roundId || !questionRef || !userRef || !answerId) {
+    if (!duelId || !userId || !answerId) {
       res.status(400).json({ error: "Missing required fields." });
       return;
     }
 
-    // Runden-Dokument abrufen
-    const roundRef = db.collection("rounds").doc(roundId);
-    const roundDoc = await roundRef.get();
+    console.log(`Received request: duelId=${duelId}, userId=${userId}, answerId=${answerId}`);
 
-    if (!roundDoc.exists) {
-      res.status(404).json({ error: "Round not found." });
-      return;
-    }
-
-    const roundData = roundDoc.data() as RoundData;
-
-    // Zugehöriges Duell-Dokument abrufen
-    const duelRef = roundData.duelRef;
+    // Duell-Dokument abrufen
+    const duelRef = db.collection("duels").doc(duelId);
     const duelDoc = await duelRef.get();
 
     if (!duelDoc.exists) {
@@ -551,194 +641,200 @@ export const answerQuestion = functions.https.onRequest(async (req, res) => {
     }
 
     const duelData = duelDoc.data() as DuelData;
+    const { currentRound, currentTurn, rounds, player1, player2, status } = duelData;
 
-    // Überprüfen, ob der Benutzer Spieler 1 ist
-    const isPlayer1 = userRef.isEqual(duelData.player1);
-    const answersKey = isPlayer1 ? "player1Answers" : "player2Answers";
-    const opponentKey = isPlayer1 ? "player2Answers" : "player1Answers";
+    console.log(`Current turn: ${currentTurn.id}, Current round: ${currentRound}`);
 
-    const answers = roundData[answersKey];
-    const opponentAnswers = roundData[opponentKey];
+    // Überprüfen, ob das Duell bereits beendet ist
+    if (status === "finished") {
+      res.status(400).json({ error: "The duel has already ended." });
+      console.log("The duel is already finished.");
+      return;
+    }
 
-    // Frage-Dokument abrufen
-    const questionDoc = await questionRef.get();
-    const questionData = questionDoc.data() as QuestionData;
+    // Überprüfen, ob der Benutzer an diesem Duell beteiligt ist
+    const isPlayer1 = player1.id === userId;
+    const isPlayer2 = player2.id === userId;
 
-    if (!questionData) {
+    if (!isPlayer1 && !isPlayer2) {
+      res.status(403).json({ error: "User is not part of this duel." });
+      return;
+    }
+
+    console.log(`User is ${isPlayer1 ? "Player 1" : "Player 2"}`);
+
+    // Überprüfen, ob der Benutzer am Zug ist
+    if (currentTurn.id !== userId) {
+      res.status(403).json({ error: "It's not your turn." });
+      return;
+    }
+
+    // Aktuelle Runde und Frage ermitteln
+    const round = rounds[currentRound];
+    if (!round) {
+      res.status(500).json({ error: "Invalid current round." });
+      return;
+    }
+
+    const { currentQuestionIndex, player1Answers, player2Answers } = round;
+
+    if (currentQuestionIndex === null || currentQuestionIndex < 0) {
+      res.status(500).json({ error: "Invalid current question index." });
+      return;
+    }
+
+    console.log(`Current question index: ${currentQuestionIndex}`);
+
+    // Antworten-Array basierend auf dem Spieler ermitteln
+    const answersArray = isPlayer1 ? player1Answers : player2Answers;
+
+    if (!answersArray || currentQuestionIndex >= answersArray.length) {
+      res.status(500).json({ error: "Invalid answers array or index out of bounds." });
+      return;
+    }
+
+    const question = answersArray[currentQuestionIndex];
+    if (!question) {
       res.status(500).json({ error: "Invalid question data." });
       return;
     }
 
-    // Richtige Antwort abrufen
-    const correctAnswerDoc = await db
-      .collection("answers")
-      .doc(questionData.correctAnswerId)
-      .get();
+    console.log("Current question fetched successfully:", question);
 
-    if (!correctAnswerDoc.exists) {
-      res.status(500).json({ error: "Correct answer not found." });
-      return;
-    }
+    // Überprüfen, ob die Antwort korrekt ist
+    const isCorrect = question.correctAnswerId === answerId;
+    console.log(`Answer is ${isCorrect ? "correct" : "incorrect"}`);
 
-    const correctAnswer = correctAnswerDoc.data() as AnswerData;
-    const isCorrect = correctAnswerDoc.id === answerId;
+    // Spielerantwort aktualisieren
+    answersArray[currentQuestionIndex] = {
+      ...question,
+      currentAnswerId: answerId,
+      status: isCorrect ? "correct" : "incorrect",
+    };
 
-    // Antwort aktualisieren
-    const updatedAnswers = answers.map((answer: PlayerAnswer) =>
-      answer.ref.isEqual(questionRef)
-        ? { ...answer, status: isCorrect ? "correct" : "incorrect" }
-        : answer
-    );
-
-    roundData[answersKey] = updatedAnswers;
-
-    // Feedback an den Spieler
-    const feedbackMessage = isCorrect
-      ? "Richtig beantwortet! Gut gemacht."
-      : `Falsch beantwortet. Die richtige Antwort ist: "${correctAnswer.text}"`;
-
-    await sendNotification(userRef, isCorrect ? "Richtig!" : "Falsch!", feedbackMessage, {
-      roundId,
-      questionId: questionRef.id,
-    });
-
-    // Prüfen, ob alle Fragen der aktuellen Spieler beantwortet wurden
-    const allAnsweredByPlayer = updatedAnswers.every(
-      (answer: PlayerAnswer) => answer.status !== "unanswered"
-    );
-
-    if (allAnsweredByPlayer) {
-      // Wenn beide Spieler ihre Fragen beantwortet haben, werten wir die Runde aus
-      const allOpponentAnswered = opponentAnswers.every(
-        (answer: PlayerAnswer) => answer.status !== "unanswered"
-      );
-
-      if (allOpponentAnswered) {
-        // Punkte der Runde berechnen
-        const player1Correct = roundData.player1Answers.filter((a) => a.status === "correct").length;
-        const player2Correct = roundData.player2Answers.filter((a) => a.status === "correct").length;
-
-        if (player1Correct > player2Correct) {
-          duelData.scorePlayer1++;
-        } else if (player2Correct > player1Correct) {
-          duelData.scorePlayer2++;
-        } else {
-          // Unentschieden
-          duelData.scorePlayer1++;
-          duelData.scorePlayer2++;
-        }
-
-        // Runde abgeschlossen -> Update im Duell
-        const isLastRound = roundData.roundNumber === 5;
-
-        if (isLastRound) {
-          duelData.status = "finished";
-
-          // Gewinner ermitteln
-          const player1Score = duelData.scorePlayer1;
-          const player2Score = duelData.scorePlayer2;
-
-          let winnerMessage = "";
-          let loserMessage = "";
-          if (player1Score > player2Score) {
-            winnerMessage = `Herzlichen Glückwunsch! Du hast das Duell gewonnen. Endstand: ${player1Score}:${player2Score}`;
-            loserMessage = `Schade, du hast das Duell verloren. Endstand: ${player2Score}:${player1Score}`;
-            await sendNotification(duelData.player1, "Du hast gewonnen!", winnerMessage, {
-              duelId: duelRef.id,
-            });
-            await sendNotification(duelData.player2, "Du hast verloren!", loserMessage, {
-              duelId: duelRef.id,
-            });
-          } else if (player2Score > player1Score) {
-            winnerMessage = `Herzlichen Glückwunsch! Du hast das Duell gewonnen. Endstand: ${player2Score}:${player1Score}`;
-            loserMessage = `Schade, du hast das Duell verloren. Endstand: ${player1Score}:${player2Score}`;
-            await sendNotification(duelData.player2, "Du hast gewonnen!", winnerMessage, {
-              duelId: duelRef.id,
-            });
-            await sendNotification(duelData.player1, "Du hast verloren!", loserMessage, {
-              duelId: duelRef.id,
-            });
-          } else {
-            const drawMessage = `Unentschieden! Endstand: ${player1Score}:${player2Score}`;
-            await sendNotification(duelData.player1, "Unentschieden!", drawMessage, {
-              duelId: duelRef.id,
-            });
-            await sendNotification(duelData.player2, "Unentschieden!", drawMessage, {
-              duelId: duelRef.id,
-            });
-          }
-        } else {
-          duelData.currentRound++;
-          duelData.currentTurn =
-            duelData.currentRound % 2 === 0 ? duelData.player2 : duelData.player1;
-
-          await sendNotification(
-            duelData.player1,
-            "Runde abgeschlossen!",
-            "Die nächste Runde beginnt.",
-            { duelId: duelRef.id }
-          );
-          await sendNotification(
-            duelData.player2,
-            "Runde abgeschlossen!",
-            "Die nächste Runde beginnt.",
-            { duelId: duelRef.id }
-          );
-        }
+    // Punkte aktualisieren, falls die Antwort korrekt war
+    if (isCorrect) {
+      if (isPlayer1) {
+        duelData.scorePlayer1 += 1;
+      } else {
+        duelData.scorePlayer2 += 1;
       }
     }
 
-    // Updates speichern
-    await roundRef.update({ [answersKey]: updatedAnswers });
-    await duelRef.update({
+    console.log("Scores updated:", {
       scorePlayer1: duelData.scorePlayer1,
       scorePlayer2: duelData.scorePlayer2,
+    });
+
+    // Prüfen, ob der Spieler alle Fragen der Runde beantwortet hat
+    const playerFinishedAllQuestions = answersArray.every(
+      (answer) => answer.status && answer.status !== "unanswered"
+    );
+
+    if (playerFinishedAllQuestions) {
+      console.log(`Player ${isPlayer1 ? "1" : "2"} has finished all questions.`);
+
+      if (isPlayer2) {
+        console.log("Player 2 finished the round.");
+
+        // Runde ist abgeschlossen, zur nächsten Runde übergehen
+        if (currentRound === rounds.length - 1) {
+          duelData.status = "finished";
+
+          console.log("Duel finished. Final scores:", {
+            scorePlayer1: duelData.scorePlayer1,
+            scorePlayer2: duelData.scorePlayer2,
+          });
+
+          // Gewinner ermitteln
+          if (duelData.scorePlayer1 > duelData.scorePlayer2) {
+            await sendNotification(player1, "Du hast gewonnen!", "Herzlichen Glückwunsch!");
+            await sendNotification(player2, "Du hast verloren!", "Besser beim nächsten Mal!");
+          } else if (duelData.scorePlayer2 > duelData.scorePlayer1) {
+            await sendNotification(player2, "Du hast gewonnen!", "Herzlichen Glückwunsch!");
+            await sendNotification(player1, "Du hast verloren!", "Besser beim nächsten Mal!");
+          } else {
+            await sendNotification(player1, "Unentschieden!", "Das Duell endet unentschieden!");
+            await sendNotification(player2, "Unentschieden!", "Das Duell endet unentschieden!");
+          }
+        } else {
+          duelData.currentRound += 1;
+          duelData.currentTurn = player1;
+          rounds[currentRound].currentQuestionIndex = 0;
+          console.log("Next round started. Current turn: Player 1");
+        }
+      } else {
+        // Spieler 2 ist an der Reihe
+        duelData.currentTurn = player2;
+        rounds[currentRound].currentQuestionIndex = 0;
+        console.log("Player 2's turn to complete the round.");
+      }
+    } else {
+      // Zur nächsten Frage der Runde übergehen
+      round.currentQuestionIndex += 1;
+      console.log("Moved to the next question. New question index:", round.currentQuestionIndex);
+    }
+
+    // Duell-Dokument aktualisieren
+    console.log("Updating duel document with new data.");
+    await duelRef.update({
+      rounds,
       currentRound: duelData.currentRound,
       currentTurn: duelData.currentTurn,
       status: duelData.status,
+      scorePlayer1: duelData.scorePlayer1,
+      scorePlayer2: duelData.scorePlayer2,
     });
 
-    res.status(200).json({ message: "Answer processed successfully.", isCorrect });
+    console.log("Duel document updated successfully.");
+    res.status(200).json({
+      message: isCorrect ? "Answer is correct!" : "Answer is incorrect.",
+      isCorrect,
+      correctAnswerId: question.correctAnswerId, // Füge die korrekte Antwort-ID hinzu
+    });
   } catch (error) {
-    console.error("Error in answerQuestion:", error.message);
+    console.error("Error in answerQuestion:", error.message, error.stack);
     res.status(500).json({ error: "Error processing answer: " + error.message });
   }
 });
 
 
 
-// Typen
-interface AnswerData {
-  text: string; // Text der Antwort
-  questionRef: FirebaseFirestore.DocumentReference; // Referenz zur zugehörigen Frage
-}
 
-interface QuestionData {
-  questionText: string; // Die Frage
-  correctAnswerId: string; // ID der korrekten Antwort
-  answers: FirebaseFirestore.DocumentReference[]; // Array mit Referenzen auf die Antwortdokumente
-}
+
+
+
+
+
 
 interface PlayerAnswer {
-  ref: FirebaseFirestore.DocumentReference<AnswerData>; // Referenz zur Antwort
-  status: string; // "unanswered", "correct", "incorrect"
+  questionId: string; // ID der Frage
+  questionText: string; // Fragetext
+  answers: {
+    id: string; // Antwort-ID
+    text: string; // Antwort-Text
+  }[]; // Antwortmöglichkeiten
+  correctAnswerId: string; // ID der korrekten Antwort
+  currentAnswerId: string | null; // Vom Spieler gegebene Antwort (null, falls nicht beantwortet)
+  status: "unanswered" | "correct" | "incorrect"; // Status der Antwort
 }
 
-interface RoundData {
-  duelRef: FirebaseFirestore.DocumentReference; // Referenz zum Duell
+interface Round {
   roundNumber: number; // Nummer der Runde
-  player1Answers: PlayerAnswer[]; // Antworten von Spieler 1
-  player2Answers: PlayerAnswer[]; // Antworten von Spieler 2
+  currentQuestionIndex: number; // Aktuelle Frage in der Runde
+  player1Answers: PlayerAnswer[]; // Antworten des Spielers 1
+  player2Answers: PlayerAnswer[]; // Antworten des Spielers 2
 }
 
 interface DuelData {
-  player1: FirebaseFirestore.DocumentReference; // Spieler 1
-  player2: FirebaseFirestore.DocumentReference; // Spieler 2
-  currentTurn: FirebaseFirestore.DocumentReference; // Wer ist dran?
+  classroomRef: FirebaseFirestore.DocumentReference; // Referenz zum Klassenzimmer
+  player1: FirebaseFirestore.DocumentReference; // Referenz Spieler 1
+  player2: FirebaseFirestore.DocumentReference; // Referenz Spieler 2
+  currentTurn: FirebaseFirestore.DocumentReference; // Wer ist dran
+  status: "active" | "finished"; // Status des Duells
   currentRound: number; // Aktuelle Runde
   scorePlayer1: number; // Punkte von Spieler 1
   scorePlayer2: number; // Punkte von Spieler 2
-  status: string; // Status des Duells ("active", "finished")
-  classroomRef: FirebaseFirestore.DocumentReference; // Referenz zum Klassenraum
-  rounds: string[]; // Array von Runden-IDs
+  rounds: Round[]; // Runden des Duells
+  duelId: string
 }
