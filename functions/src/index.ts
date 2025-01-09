@@ -3,11 +3,15 @@
 import * as functions from "firebase-functions";
 import * as admin from "firebase-admin";
 import { FieldValue } from "firebase-admin/firestore"; // Import Firestore-spezifischer Methoden
+import * as cors from "cors";
+
 
 
 admin.initializeApp();
 
 const db = admin.firestore();
+const corsHandler = cors({ origin: true });
+
 
 // Verbindung zu Emulatoren nur in Entwicklungsumgebung herstellen
 if (process.env.FUNCTIONS_EMULATOR) {
@@ -16,6 +20,7 @@ if (process.env.FUNCTIONS_EMULATOR) {
     ssl: false,
   });
 }
+
 
 
 // API: Liste aller Universitäten
@@ -178,6 +183,7 @@ export const getUserData = functions.https.onRequest(async (req, res) => {
 
 
 exports.joinCourse = functions.https.onRequest(async (req, res) => {
+  
   try {
     const { userId, courseId } = req.body;
 
@@ -453,117 +459,122 @@ export const createExampleQuestionSets = functions.https.onRequest(async (req, r
 
 
 export const joinDuel = functions.https.onRequest(async (req, res) => {
-  try {
-    const { userId, classroomId } = req.body;
+  
+  corsHandler(req, res, async () => {
 
-    if (!userId || !classroomId) {
-      res.status(400).json({ error: "userId and classroomId are required" });
-      return;
-    }
+    try {
+      const { userId, classroomId } = req.body;
 
-    const userRef = db.collection("users").doc(userId);
-    const classroomRef = db.collection("classrooms").doc(classroomId);
-
-    // Transaktion verwenden, um Race-Conditions zu verhindern
-    const result = await db.runTransaction(async (transaction) => {
-      const classroomDoc = await transaction.get(classroomRef);
-
-      if (!classroomDoc.exists) {
-        throw new Error("Classroom not found.");
+      if (!userId || !classroomId) {
+        res.status(400).json({ error: "userId and classroomId are required" });
+        return;
       }
 
-      const classroomData = classroomDoc.data();
+      const userRef = db.collection("users").doc(userId);
+      const classroomRef = db.collection("classrooms").doc(classroomId);
 
-      if (!classroomData?.waitingPlayer) {
-        // Kein wartender Spieler -> Spieler zur Warteschlange hinzufügen
+      // Transaktion verwenden, um Race-Conditions zu verhindern
+      const result = await db.runTransaction(async (transaction) => {
+        const classroomDoc = await transaction.get(classroomRef);
+
+        if (!classroomDoc.exists) {
+          throw new Error("Classroom not found.");
+        }
+        
+
+        const classroomData = classroomDoc.data();
+
+        if (!classroomData?.waitingPlayer) {
+          // Kein wartender Spieler -> Spieler zur Warteschlange hinzufügen
+          transaction.update(classroomRef, {
+            waitingPlayer: userRef,
+          });
+          return { status: "waiting", message: "You have been added to the queue." };
+        }
+
+        // Ein Spieler wartet -> Match mit dem wartenden Spieler
+        const opponentRef = classroomData.waitingPlayer;
+
+        // Wartenden Spieler entfernen
         transaction.update(classroomRef, {
-          waitingPlayer: userRef,
+          waitingPlayer: FieldValue.delete(),
         });
-        return { status: "waiting", message: "You have been added to the queue." };
-      }
 
-      // Ein Spieler wartet -> Match mit dem wartenden Spieler
-      const opponentRef = classroomData.waitingPlayer;
-
-      // Wartenden Spieler entfernen
-      transaction.update(classroomRef, {
-        waitingPlayer: FieldValue.delete(),
+        return { status: "matched", opponentRef };
       });
 
-      return { status: "matched", opponentRef };
-    });
+      if (result.status === "waiting") {
+        res.status(200).json({
+          message: result.message,
+          duelId: null, // Kein Duell erstellt
+        });
+        return;
+      }
 
-    if (result.status === "waiting") {
+      const opponentRef = result.opponentRef;
+
+      // Funktion zum Generieren von Runden
+      const generateRounds = async (): Promise<any[]> => {
+        const questionsSnapshot = await db.collection("questions").limit(15).get();
+        const questions = questionsSnapshot.docs.map((doc) => ({
+          questionId: doc.id,
+          questionText: doc.data().questionText,
+          answers: doc.data().answers, // Antworten direkt in der Frage enthalten
+          correctAnswerId: doc.data().correctAnswerId, // ID der richtigen Antwort
+          currentAnswerId: null, // Zu Beginn keine Antwort ausgewählt
+        }));
+
+        const rounds: any[] = [];
+        for (let i = 0; i < 5; i++) {
+          const roundQuestions = questions.slice(i * 3, i * 3 + 3);
+          rounds.push({
+            roundNumber: i,
+            currentQuestionIndex: 0, // Start bei der ersten Frage
+            player1Answers: roundQuestions.map((q) => ({ ...q, status: "unanswered" })),
+            player2Answers: roundQuestions.map((q) => ({ ...q, status: "unanswered" })),
+          });
+        }
+
+        return rounds;
+      };
+
+      // Runden generieren
+      const rounds = await generateRounds();
+
+      // Neues Duell erstellen
+      const duelRef = db.collection("duels").doc();
+      const duelData: DuelData = {
+        classroomRef,
+        player1: opponentRef,
+        player2: userRef,
+        status: "active",
+        currentRound: 0, // Start bei der ersten Runde
+        currentTurn: opponentRef, // Der wartende Spieler beginnt
+        scorePlayer1: 0,
+        scorePlayer2: 0,
+        duelId: duelRef.id,
+        rounds,
+      };
+
+      await duelRef.set(duelData);
+
+      // Spieler benachrichtigen
+      await sendNotification(opponentRef, "Du bist dran!", "Das Duell wurde gestartet. Beantworte deine erste Frage.", {
+        duelId: duelRef.id,
+      });
+      await sendNotification(userRef, "Warten auf Spieler 1", "Das Duell wurde gestartet. Dein Gegner beginnt.", {
+        duelId: duelRef.id,
+      });
+
       res.status(200).json({
-        message: result.message,
-        duelId: null, // Kein Duell erstellt
+        message: "Duel created successfully",
+        duelId: duelRef.id,
       });
-      return;
+    } catch (error) {
+      console.error("Error in joinDuel:", error.message);
+      res.status(500).json({ error: "Error joining duel: " + error.message });
     }
-
-    const opponentRef = result.opponentRef;
-
-    // Funktion zum Generieren von Runden
-    const generateRounds = async (): Promise<any[]> => {
-      const questionsSnapshot = await db.collection("questions").limit(15).get();
-      const questions = questionsSnapshot.docs.map((doc) => ({
-        questionId: doc.id,
-        questionText: doc.data().questionText,
-        answers: doc.data().answers, // Antworten direkt in der Frage enthalten
-        correctAnswerId: doc.data().correctAnswerId, // ID der richtigen Antwort
-        currentAnswerId: null, // Zu Beginn keine Antwort ausgewählt
-      }));
-
-      const rounds: any[] = [];
-      for (let i = 0; i < 5; i++) {
-        const roundQuestions = questions.slice(i * 3, i * 3 + 3);
-        rounds.push({
-          roundNumber: i,
-          currentQuestionIndex: 0, // Start bei der ersten Frage
-          player1Answers: roundQuestions.map((q) => ({ ...q, status: "unanswered" })),
-          player2Answers: roundQuestions.map((q) => ({ ...q, status: "unanswered" })),
-        });
-      }
-
-      return rounds;
-    };
-
-    // Runden generieren
-    const rounds = await generateRounds();
-
-    // Neues Duell erstellen
-    const duelRef = db.collection("duels").doc();
-    const duelData: DuelData = {
-      classroomRef,
-      player1: opponentRef,
-      player2: userRef,
-      status: "active",
-      currentRound: 0, // Start bei der ersten Runde
-      currentTurn: opponentRef, // Der wartende Spieler beginnt
-      scorePlayer1: 0,
-      scorePlayer2: 0,
-      duelId: duelRef.id,
-      rounds,
-    };
-
-    await duelRef.set(duelData);
-
-    // Spieler benachrichtigen
-    await sendNotification(opponentRef, "Du bist dran!", "Das Duell wurde gestartet. Beantworte deine erste Frage.", {
-      duelId: duelRef.id,
-    });
-    await sendNotification(userRef, "Warten auf Spieler 1", "Das Duell wurde gestartet. Dein Gegner beginnt.", {
-      duelId: duelRef.id,
-    });
-
-    res.status(200).json({
-      message: "Duel created successfully",
-      duelId: duelRef.id,
-    });
-  } catch (error) {
-    console.error("Error in joinDuel:", error.message);
-    res.status(500).json({ error: "Error joining duel: " + error.message });
-  }
+  });
 });
 
 
@@ -621,184 +632,318 @@ async function sendNotification(
 
 
 export const answerQuestion = functions.https.onRequest(async (req, res) => {
-  try {
-    const { duelId, userId, answerId } = req.body;
+  corsHandler(req, res, async () => {
 
-    if (!duelId || !userId || !answerId) {
-      res.status(400).json({ error: "Missing required fields." });
-      return;
-    }
+    try {
+      const { duelId, userId, answerId } = req.body;
 
-    console.log(`Received request: duelId=${duelId}, userId=${userId}, answerId=${answerId}`);
-
-    // Duell-Dokument abrufen
-    const duelRef = db.collection("duels").doc(duelId);
-    const duelDoc = await duelRef.get();
-
-    if (!duelDoc.exists) {
-      res.status(404).json({ error: "Duel not found." });
-      return;
-    }
-
-    const duelData = duelDoc.data() as DuelData;
-    const { currentRound, currentTurn, rounds, player1, player2, status } = duelData;
-
-    console.log(`Current turn: ${currentTurn.id}, Current round: ${currentRound}`);
-
-    // Überprüfen, ob das Duell bereits beendet ist
-    if (status === "finished") {
-      res.status(400).json({ error: "The duel has already ended." });
-      console.log("The duel is already finished.");
-      return;
-    }
-
-    // Überprüfen, ob der Benutzer an diesem Duell beteiligt ist
-    const isPlayer1 = player1.id === userId;
-    const isPlayer2 = player2.id === userId;
-
-    if (!isPlayer1 && !isPlayer2) {
-      res.status(403).json({ error: "User is not part of this duel." });
-      return;
-    }
-
-    console.log(`User is ${isPlayer1 ? "Player 1" : "Player 2"}`);
-
-    // Überprüfen, ob der Benutzer am Zug ist
-    if (currentTurn.id !== userId) {
-      res.status(403).json({ error: "It's not your turn." });
-      return;
-    }
-
-    // Aktuelle Runde und Frage ermitteln
-    const round = rounds[currentRound];
-    if (!round) {
-      res.status(500).json({ error: "Invalid current round." });
-      return;
-    }
-
-    const { currentQuestionIndex, player1Answers, player2Answers } = round;
-
-    if (currentQuestionIndex === null || currentQuestionIndex < 0) {
-      res.status(500).json({ error: "Invalid current question index." });
-      return;
-    }
-
-    console.log(`Current question index: ${currentQuestionIndex}`);
-
-    // Antworten-Array basierend auf dem Spieler ermitteln
-    const answersArray = isPlayer1 ? player1Answers : player2Answers;
-
-    if (!answersArray || currentQuestionIndex >= answersArray.length) {
-      res.status(500).json({ error: "Invalid answers array or index out of bounds." });
-      return;
-    }
-
-    const question = answersArray[currentQuestionIndex];
-    if (!question) {
-      res.status(500).json({ error: "Invalid question data." });
-      return;
-    }
-
-    console.log("Current question fetched successfully:", question);
-
-    // Überprüfen, ob die Antwort korrekt ist
-    const isCorrect = question.correctAnswerId === answerId;
-    console.log(`Answer is ${isCorrect ? "correct" : "incorrect"}`);
-
-    // Spielerantwort aktualisieren
-    answersArray[currentQuestionIndex] = {
-      ...question,
-      currentAnswerId: answerId,
-      status: isCorrect ? "correct" : "incorrect",
-    };
-
-    // Punkte aktualisieren, falls die Antwort korrekt war
-    if (isCorrect) {
-      if (isPlayer1) {
-        duelData.scorePlayer1 += 1;
-      } else {
-        duelData.scorePlayer2 += 1;
+      if (!duelId || !userId || !answerId) {
+        res.status(400).json({ error: "Missing required fields." });
+        return;
       }
-    }
 
-    console.log("Scores updated:", {
-      scorePlayer1: duelData.scorePlayer1,
-      scorePlayer2: duelData.scorePlayer2,
-    });
+      console.log(`Received request: duelId=${duelId}, userId=${userId}, answerId=${answerId}`);
 
-    // Prüfen, ob der Spieler alle Fragen der Runde beantwortet hat
-    const playerFinishedAllQuestions = answersArray.every(
-      (answer) => answer.status && answer.status !== "unanswered"
-    );
+      // Duell-Dokument abrufen
+      const duelRef = db.collection("duels").doc(duelId);
+      const duelDoc = await duelRef.get();
 
-    if (playerFinishedAllQuestions) {
-      console.log(`Player ${isPlayer1 ? "1" : "2"} has finished all questions.`);
+      if (!duelDoc.exists) {
+        res.status(404).json({ error: "Duel not found." });
+        return;
+      }
 
-      if (isPlayer2) {
-        console.log("Player 2 finished the round.");
+      const duelData = duelDoc.data() as DuelData;
+      const { currentRound, currentTurn, rounds, player1, player2, status } = duelData;
 
-        // Runde ist abgeschlossen, zur nächsten Runde übergehen
-        if (currentRound === rounds.length - 1) {
-          duelData.status = "finished";
+      console.log(`Current turn: ${currentTurn.id}, Current round: ${currentRound}`);
 
-          console.log("Duel finished. Final scores:", {
-            scorePlayer1: duelData.scorePlayer1,
-            scorePlayer2: duelData.scorePlayer2,
-          });
+      // Überprüfen, ob das Duell bereits beendet ist
+      if (status === "finished") {
+        res.status(400).json({ error: "The duel has already ended." });
+        console.log("The duel is already finished.");
+        return;
+      }
 
-          // Gewinner ermitteln
-          if (duelData.scorePlayer1 > duelData.scorePlayer2) {
-            await sendNotification(player1, "Du hast gewonnen!", "Herzlichen Glückwunsch!");
-            await sendNotification(player2, "Du hast verloren!", "Besser beim nächsten Mal!");
-          } else if (duelData.scorePlayer2 > duelData.scorePlayer1) {
-            await sendNotification(player2, "Du hast gewonnen!", "Herzlichen Glückwunsch!");
-            await sendNotification(player1, "Du hast verloren!", "Besser beim nächsten Mal!");
+      // Überprüfen, ob der Benutzer an diesem Duell beteiligt ist
+      const isPlayer1 = player1.id === userId;
+      const isPlayer2 = player2.id === userId;
+
+      if (!isPlayer1 && !isPlayer2) {
+        res.status(403).json({ error: "User is not part of this duel." });
+        return;
+      }
+
+      console.log(`User is ${isPlayer1 ? "Player 1" : "Player 2"}`);
+
+      // Überprüfen, ob der Benutzer am Zug ist
+      if (currentTurn.id !== userId) {
+        res.status(403).json({ error: "It's not your turn." });
+        return;
+      }
+
+      // Aktuelle Runde und Frage ermitteln
+      const round = rounds[currentRound];
+      if (!round) {
+        res.status(500).json({ error: "Invalid current round." });
+        return;
+      }
+
+      const { currentQuestionIndex, player1Answers, player2Answers } = round;
+
+      if (currentQuestionIndex === null || currentQuestionIndex < 0) {
+        res.status(500).json({ error: "Invalid current question index." });
+        return;
+      }
+
+      console.log(`Current question index: ${currentQuestionIndex}`);
+
+      // Antworten-Array basierend auf dem Spieler ermitteln
+      const answersArray = isPlayer1 ? player1Answers : player2Answers;
+
+      if (!answersArray || currentQuestionIndex >= answersArray.length) {
+        res.status(500).json({ error: "Invalid answers array or index out of bounds." });
+        return;
+      }
+
+      const question = answersArray[currentQuestionIndex];
+      if (!question) {
+        res.status(500).json({ error: "Invalid question data." });
+        return;
+      }
+
+      console.log("Current question fetched successfully:", question);
+
+      // Überprüfen, ob die Antwort korrekt ist
+      const isCorrect = question.correctAnswerId === answerId;
+      console.log(`Answer is ${isCorrect ? "correct" : "incorrect"}`);
+
+      // Spielerantwort aktualisieren
+      answersArray[currentQuestionIndex] = {
+        ...question,
+        currentAnswerId: answerId,
+        status: isCorrect ? "correct" : "incorrect",
+      };
+
+      // Punkte aktualisieren, falls die Antwort korrekt war
+      if (isCorrect) {
+        if (isPlayer1) {
+          duelData.scorePlayer1 += 1;
+        } else {
+          duelData.scorePlayer2 += 1;
+        }
+      }
+
+      console.log("Scores updated:", {
+        scorePlayer1: duelData.scorePlayer1,
+        scorePlayer2: duelData.scorePlayer2,
+      });
+
+      // Prüfen, ob der Spieler alle Fragen der Runde beantwortet hat
+      const playerFinishedAllQuestions = answersArray.every(
+        (answer) => answer.status && answer.status !== "unanswered"
+      );
+
+      if (playerFinishedAllQuestions) {
+        console.log(`Player ${isPlayer1 ? "1" : "2"} has finished all questions.`);
+
+        if (isPlayer2) {
+          console.log("Player 2 finished the round.");
+
+          // Runde ist abgeschlossen, zur nächsten Runde übergehen
+          if (currentRound === rounds.length - 1) {
+            duelData.status = "finished";
+
+            console.log("Duel finished. Final scores:", {
+              scorePlayer1: duelData.scorePlayer1,
+              scorePlayer2: duelData.scorePlayer2,
+            });
+
+            // Gewinner ermitteln
+            if (duelData.scorePlayer1 > duelData.scorePlayer2) {
+              await sendNotification(player1, "Du hast gewonnen!", "Herzlichen Glückwunsch!");
+              await sendNotification(player2, "Du hast verloren!", "Besser beim nächsten Mal!");
+            } else if (duelData.scorePlayer2 > duelData.scorePlayer1) {
+              await sendNotification(player2, "Du hast gewonnen!", "Herzlichen Glückwunsch!");
+              await sendNotification(player1, "Du hast verloren!", "Besser beim nächsten Mal!");
+            } else {
+              await sendNotification(player1, "Unentschieden!", "Das Duell endet unentschieden!");
+              await sendNotification(player2, "Unentschieden!", "Das Duell endet unentschieden!");
+            }
           } else {
-            await sendNotification(player1, "Unentschieden!", "Das Duell endet unentschieden!");
-            await sendNotification(player2, "Unentschieden!", "Das Duell endet unentschieden!");
+            duelData.currentRound += 1;
+            duelData.currentTurn = player1;
+            rounds[currentRound].currentQuestionIndex = 0;
+            console.log("Next round started. Current turn: Player 1");
           }
         } else {
-          duelData.currentRound += 1;
-          duelData.currentTurn = player1;
+          // Spieler 2 ist an der Reihe
+          duelData.currentTurn = player2;
           rounds[currentRound].currentQuestionIndex = 0;
-          console.log("Next round started. Current turn: Player 1");
+          console.log("Player 2's turn to complete the round.");
         }
       } else {
-        // Spieler 2 ist an der Reihe
-        duelData.currentTurn = player2;
-        rounds[currentRound].currentQuestionIndex = 0;
-        console.log("Player 2's turn to complete the round.");
+        // Zur nächsten Frage der Runde übergehen
+        round.currentQuestionIndex += 1;
+        console.log("Moved to the next question. New question index:", round.currentQuestionIndex);
       }
-    } else {
-      // Zur nächsten Frage der Runde übergehen
-      round.currentQuestionIndex += 1;
-      console.log("Moved to the next question. New question index:", round.currentQuestionIndex);
+
+      // Duell-Dokument aktualisieren
+      console.log("Updating duel document with new data.");
+      await duelRef.update({
+        rounds,
+        currentRound: duelData.currentRound,
+        currentTurn: duelData.currentTurn,
+        status: duelData.status,
+        scorePlayer1: duelData.scorePlayer1,
+        scorePlayer2: duelData.scorePlayer2,
+      });
+
+      console.log("Duel document updated successfully.");
+      res.status(200).json({
+        message: isCorrect ? "Answer is correct!" : "Answer is incorrect.",
+        isCorrect,
+        correctAnswerId: question.correctAnswerId, // Füge die korrekte Antwort-ID hinzu
+      });
+    } catch (error) {
+      console.error("Error in answerQuestion:", error.message, error.stack);
+      res.status(500).json({ error: "Error processing answer: " + error.message });
     }
+  });
 
-    // Duell-Dokument aktualisieren
-    console.log("Updating duel document with new data.");
-    await duelRef.update({
-      rounds,
-      currentRound: duelData.currentRound,
-      currentTurn: duelData.currentTurn,
-      status: duelData.status,
-      scorePlayer1: duelData.scorePlayer1,
-      scorePlayer2: duelData.scorePlayer2,
-    });
-
-    console.log("Duel document updated successfully.");
-    res.status(200).json({
-      message: isCorrect ? "Answer is correct!" : "Answer is incorrect.",
-      isCorrect,
-      correctAnswerId: question.correctAnswerId, // Füge die korrekte Antwort-ID hinzu
-    });
-  } catch (error) {
-    console.error("Error in answerQuestion:", error.message, error.stack);
-    res.status(500).json({ error: "Error processing answer: " + error.message });
-  }
 });
 
 
+
+export const getInitialDuelData = functions.https.onRequest((req, res) => {
+  corsHandler(req, res, async () => {
+    try {
+      const { duelId } = req.body;
+
+      if (!duelId) {
+        res.status(400).json({ error: "Duel ID is required." });
+        return;
+      }
+
+      console.log(`Received request: duelId=${duelId}`);
+
+      // Duell-Dokument abrufen
+      const duelRef = db.collection("duels").doc(duelId);
+      const duelDoc = await duelRef.get();
+
+      if (!duelDoc.exists) {
+        res.status(404).json({ error: "Duel not found." });
+        return;
+      }
+
+      const duelData = duelDoc.data();
+      if (!duelData) {
+        res.status(500).json({ error: "Invalid duel data." });
+        return;
+      }
+
+      const { currentRound, rounds, currentTurn } = duelData;
+
+      console.log(`Current round: ${currentRound}`);
+
+      // Überprüfen, ob die Runden-Daten gültig sind
+      if (!Array.isArray(rounds) || currentRound < 0 || currentRound >= rounds.length) {
+        res.status(400).json({ error: "Invalid round data." });
+        return;
+      }
+
+      const round = rounds[currentRound];
+
+      if (!round || typeof round.currentQuestionIndex !== "number") {
+        res.status(400).json({ error: "Invalid question data in the current round." });
+        return;
+      }
+
+      const currentQuestionIndex = round.currentQuestionIndex;
+
+      console.log(`Current question index: ${currentQuestionIndex}`);
+
+      // Die Position der Frage ist 1-basiert
+      const questionPosition = currentQuestionIndex;
+
+      // Die currentTurnId extrahieren
+      const currentTurnId = currentTurn ? currentTurn.id : null;
+
+      res.status(200).json({
+        questionPosition,
+        currentRound,
+        currentTurnId, // Füge die currentTurnId hinzu
+        message: `Current question position is ${questionPosition}, current round is ${currentRound}, and current turn is ${currentTurnId}`,
+      });
+    } catch (error) {
+      console.error("Error in getInitialDuelData:", error.message, error.stack);
+      res.status(500).json({ error: "Error retrieving initial duel data: " + error.message });
+    }
+  });
+});
+
+
+
+// export const getInitialDuelData = functions.https.onRequest(async (req, res) => {
+//   try {
+//     const { duelId } = req.body;
+
+//     if (!duelId) {
+//       res.status(400).json({ error: "Duel ID is required." });
+//       return;
+//     }
+
+//     console.log(`Received request: duelId=${duelId}`);
+
+//     // Duell-Dokument abrufen
+//     const duelRef = db.collection("duels").doc(duelId);
+//     const duelDoc = await duelRef.get();
+
+//     if (!duelDoc.exists) {
+//       res.status(404).json({ error: "Duel not found." });
+//       return;
+//     }
+
+//     const duelData = duelDoc.data();
+//     if (!duelData) {
+//       res.status(500).json({ error: "Invalid duel data." });
+//       return;
+//     }
+
+//     const { currentRound, rounds } = duelData;
+
+//     console.log(`Current round: ${currentRound}`);
+
+//     // Überprüfen, ob die Runden-Daten gültig sind
+//     if (!Array.isArray(rounds) || currentRound < 0 || currentRound >= rounds.length) {
+//       res.status(400).json({ error: "Invalid round data." });
+//       return;
+//     }
+
+//     const round = rounds[currentRound];
+
+//     if (!round || typeof round.currentQuestionIndex !== "number") {
+//       res.status(400).json({ error: "Invalid question data in the current round." });
+//       return;
+//     }
+
+//     const currentQuestionIndex = round.currentQuestionIndex;
+
+//     console.log(`Current question index: ${currentQuestionIndex}`);
+
+//     // Die Position der Frage ist 1-basiert
+//     const questionPosition = currentQuestionIndex;
+
+//     res.status(200).json({
+//       questionPosition,
+//       currentRound,
+//       message: `Current question position is ${questionPosition}, and current round is ${currentRound}`,
+//     });
+//   } catch (error) {
+//     console.error("Error in getInitialDuelData:", error.message, error.stack);
+//     res.status(500).json({ error: "Error retrieving initial duel data: " + error.message });
+//   }
+// });
 
 
 
