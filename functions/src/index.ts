@@ -183,7 +183,8 @@ export const getUserData = functions.https.onRequest(async (req, res) => {
 
 
 exports.joinCourse = functions.https.onRequest(async (req, res) => {
-  
+  corsHandler(req, res, async () => {
+
   try {
     const { userId, courseId } = req.body;
 
@@ -238,6 +239,7 @@ exports.joinCourse = functions.https.onRequest(async (req, res) => {
     console.error("Error in joinCourse:", error.message);
     res.status(500).json({ error: error.message });
   }
+});
 });
 
 
@@ -453,6 +455,179 @@ export const createExampleQuestionSets = functions.https.onRequest(async (req, r
     res.status(500).json({ error: "Error creating example questions: " + error.message });
   }
 });
+
+export const createCorporateCommunicationQuestions = functions.https.onRequest(async (req, res) => {
+  try {
+    // JSON-Fragesatz
+    const exampleQuestions = [
+      {
+        question: "What is the primary goal of Corporate Communication?",
+        options: ["Maximizing profits", "Ensuring effective information exchange", "Controlling stakeholder actions", "Increasing product sales"],
+        answer: "Ensuring effective information exchange",
+        level: "Remember",
+      },
+      {
+        question: "Which governance type includes the regulation of Social Media activities?",
+        options: ["IT Governance", "Corporate Governance", "Social Media Governance", "Stakeholder Governance"],
+        answer: "Social Media Governance",
+        level: "Remember",
+      },
+      {
+        question: "What is the term for transforming raw data into meaningful information?",
+        options: ["Encoding", "Data Processing", "Decoding", "Communication Modeling"],
+        answer: "Data Processing",
+        level: "Remember",
+      },
+      {
+        question: "Which framework is used to analyze stakeholders' power and legitimacy?",
+        options: ["SWOT Analysis", "Mitchell et al.'s Stakeholder Mapping", "PESTEL Framework", "Porter's Five Forces"],
+        answer: "Mitchell et al.'s Stakeholder Mapping",
+        level: "Remember",
+      },
+      {
+        question: "What does 'XML' stand for?",
+        options: ["Extended Markup Language", "Extensible Markup Language", "External Metadata Language", "Exclusive Metadata Language"],
+        answer: "Extensible Markup Language",
+        level: "Remember",
+      },
+      {
+        question: "How does Social Media Governance help organizations?",
+        options: ["By limiting employee activities", "By fostering organizational transparency", "By creating competitive advantages through coordinated activities", "By enforcing strict guidelines on all stakeholders"],
+        answer: "By creating competitive advantages through coordinated activities",
+        level: "Understand",
+      },
+      {
+        question: "What distinguishes 'Information' from 'Data'?",
+        options: ["Syntax", "Context and meaning", "Volume", "Processing speed"],
+        answer: "Context and meaning",
+        level: "Understand",
+      },
+      {
+        question: "Why are Social Media guidelines crucial for organizations?",
+        options: ["To limit creativity among employees", "To ensure legal compliance and reputation management", "To reduce the usage of social media platforms", "To increase individual social media usage"],
+        answer: "To ensure legal compliance and reputation management",
+        level: "Understand",
+      },
+      {
+        question: "Which type of noise can arise from mismatched codes in communication?",
+        options: ["Physical noise", "Semantic noise", "Syntactic noise", "Pragmatic noise"],
+        answer: "Semantic noise",
+        level: "Understand",
+      },
+      {
+        question: "How does the 'Four-Sides Model' describe communication?",
+        options: ["As a one-dimensional process", "As a system of encoding and decoding", "As a message with multiple layers, including fact, appeal, and self-revelation", "As a strictly linear exchange of information"],
+        answer: "As a message with multiple layers, including fact, appeal, and self-revelation",
+        level: "Understand",
+      },
+      {
+        question: "A team uses Microsoft Teams and SharePoint to streamline internal communication. Which communication theory is most relevant?",
+        options: ["Data-Information-Knowledge Cycle", "Push and Pull Communication Theory", "Model-Based Communication", "Social Media Governance"],
+        answer: "Push and Pull Communication Theory",
+        level: "Apply",
+      },
+      {
+        question: "If a stakeholder group is both powerful and legitimate, which stakeholder classification applies (Mitchell et al.)?",
+        options: ["Dormant", "Dominant", "Dangerous", "Definitive"],
+        answer: "Definitive",
+        level: "Apply",
+      },
+      {
+        question: "How can XML enhance data exchange in corporate communication?",
+        options: ["By reducing data duplication", "By simplifying document visualization", "By enabling structured and machine-readable formats", "By enforcing stricter security protocols"],
+        answer: "By enabling structured and machine-readable formats",
+        level: "Apply",
+      },
+      {
+        question: "A company faces criticism on Twitter after launching a hashtag campaign. What is the best immediate response?",
+        options: ["Ignore the criticism and move on", "Take down the campaign and issue a statement addressing the concerns", "Engage in heated debates with users", "Launch another campaign to divert attention"],
+        answer: "Take down the campaign and issue a statement addressing the concerns",
+        level: "Apply",
+      },
+      {
+        question: "During a stakeholder communication meeting, employees demand clarification about their roles. Which stage of group process dynamics (Drexler et al.) are they likely in?",
+        options: ["Orientation", "Target & Role Clarification", "Implementation", "Peak Performance"],
+        answer: "Target & Role Clarification",
+        level: "Apply",
+      },
+      {
+        question: "Which type of stakeholders include employees, managers, and shareholders?",
+        options: ["Internal stakeholders", "External stakeholders", "Primary stakeholders", "Tertiary stakeholders"],
+        answer: "Internal stakeholders",
+        level: "Remember",
+      },
+      {
+        question: "What is the purpose of a Social Media Guideline?",
+        options: ["To foster creativity in employees", "To prevent legal and reputational risks", "To increase social media usage", "To promote employee autonomy"],
+        answer: "To prevent legal and reputational risks",
+        level: "Understand",
+      },
+      {
+        question: "Which communication medium is best suited for building commitment in internal communication?",
+        options: ["Newsletters", "Team problem solving sessions", "Electronic mail", "Roadshows"],
+        answer: "Team problem solving sessions",
+        level: "Apply",
+      },
+      {
+        question: "What is the primary goal of stakeholder communication according to Steyn (2003)?",
+        options: ["To manage stakeholder resistance", "To build competitive advantage through collaboration", "To provide detailed company reports", "To enforce strict organizational policies"],
+        answer: "To build competitive advantage through collaboration",
+        level: "Understand",
+      },
+      {
+        question: "How does the integration of platforms like SharePoint and Teams improve internal communication?",
+        options: ["By simplifying workflows and reducing costs", "By enabling seamless content and communication integration", "By limiting employee autonomy", "By enforcing stricter communication policies"],
+        answer: "By enabling seamless content and communication integration",
+        level: "Apply",
+      },
+      {
+        question: "Which dimension of communication focuses on balancing the expectations and power of stakeholders?",
+        options: ["Semantic communication", "Strategic communication", "Stakeholder communication", "Operational communication"],
+        answer: "Stakeholder communication",
+        level: "Understand",
+      },
+    ];
+
+    // Batch-Erstellung
+    const batch = db.batch();
+    const questionCollection = db.collection("questions");
+
+    exampleQuestions.forEach((question) => {
+      const questionRef = questionCollection.doc();
+      const formattedAnswers = question.options.map((text, index) => ({
+        id: (index + 1).toString(),
+        text,
+      }));
+
+      const correctAnswerIndex = question.options.indexOf(question.answer);
+
+      if (correctAnswerIndex === -1) {
+        console.error(`Error: Answer not found in options for question: "${question.question}"`);
+        return;
+      }
+
+      const questionData = {
+        questionText: question.question,
+        answers: formattedAnswers,
+        correctAnswerId: (correctAnswerIndex + 1).toString(),
+        level: question.level,
+      };
+
+      batch.set(questionRef, questionData);
+    });
+
+    await batch.commit();
+
+    res.status(201).json({
+      message: `${exampleQuestions.length} Corporate Communication questions created successfully.`,
+    });
+  } catch (error) {
+    console.error("Error creating Corporate Communication questions:", error.message);
+    res.status(500).json({ error: "Error creating Corporate Communication questions: " + error.message });
+  }
+});
+
+
 
 
 

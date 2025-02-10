@@ -10,9 +10,7 @@
         "firebase-debug.*.log",
         "*.local"
       ],
-      "predeploy": [
-      
-      ]
+      "predeploy": []
     }
   ],
   "emulators": {
@@ -30,6 +28,15 @@
     "singleProjectMode": true,
     "auth": {
       "port": 9099
+    }
+  },
+  "deploy": {
+    "functions": {
+      "default": {
+        "limits": {
+          "maxInstances": 10
+        }
+      }
     }
   }
 }
