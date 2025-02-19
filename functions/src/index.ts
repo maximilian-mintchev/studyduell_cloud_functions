@@ -23,26 +23,26 @@ if (process.env.FUNCTIONS_EMULATOR) {
 
 
 
-// API: Liste aller Universitäten
-export const getUniversities = functions.https.onRequest(async (req, res) => {
-  try {
-    const universitiesSnapshot = await db.collection("universities").get();
+  // API: Liste aller Universitäten
+  export const getUniversities = functions.https.onRequest(async (req, res) => {
+    try {
+      const universitiesSnapshot = await db.collection("universities").get();
 
-    if (universitiesSnapshot.empty) {
-      res.status(404).send("No universities found.");
-      return;
+      if (universitiesSnapshot.empty) {
+        res.status(404).send("No universities found.");
+        return;
+      }
+
+      const universities = universitiesSnapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+
+      res.status(200).json(universities);
+    } catch (error) {
+      res.status(500).send("Error retrieving universities: " + error.message);
     }
-
-    const universities = universitiesSnapshot.docs.map((doc) => ({
-      id: doc.id,
-      ...doc.data(),
-    }));
-
-    res.status(200).json(universities);
-  } catch (error) {
-    res.status(500).send("Error retrieving universities: " + error.message);
-  }
-});
+  });
 
 
 // API: Eine neue Universität erstellen
@@ -55,7 +55,15 @@ export const createUniversity = functions.https.onRequest(async (req, res) => {
       return;
     }
 
-    const universityRef = await db.collection("universities").add({ name, location });
+    // Neue University erstellen und Referenz erhalten
+    const universityRef = db.collection("universities").doc();
+
+    // Daten mit ID speichern
+    await universityRef.set({
+      id: universityRef.id,  // Die ID direkt im Dokument speichern
+      name,
+      location,
+    });
 
     res.status(201).json({
       id: universityRef.id,
@@ -66,8 +74,8 @@ export const createUniversity = functions.https.onRequest(async (req, res) => {
   }
 });
 
-// API: einen neuen Kurs erstellen
-export const createCourse = functions.https.onRequest(async (req, res) => {
+
+export const createProgram = functions.https.onRequest(async (req, res) => {
   try {
     const { universityId, name } = req.body;
 
@@ -78,14 +86,105 @@ export const createCourse = functions.https.onRequest(async (req, res) => {
 
     const universityRef = db.collection("universities").doc(universityId);
 
-    // Speichere die University als Reference
-    const courseRef = await db.collection("courses").add({ universityRef, name });
+    // Erstelle eine neue Referenz für das Programmdokument
+    const programRef = db.collection("programs").doc();
+
+    // Daten mit der ID und universityId speichern
+    await programRef.set({
+      id: programRef.id,     // Die ID im Dokument speichern
+      universityId,          // Die ID der zugehörigen Universität speichern
+      universityRef,         // Referenz zur Universität
+      name,                  // Name des Studiengangs
+    });
+
+    res.status(201).json({
+      id: programRef.id,
+      message: "Program created",
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Error creating program: " + error.message });
+  }
+});
+
+
+export const createCourse = functions.https.onRequest(async (req, res) => {
+  try {
+    const { name, programIds } = req.body;
+
+    // Eingabe validieren
+    if (!name || !Array.isArray(programIds) || programIds.length === 0) {
+      res.status(400).json({ error: "Name and a valid list of programIds are required" });
+      return;
+    }
+
+    // Konvertiere die IDs in DocumentReferences
+    const programRefs = programIds.map((id: string) => db.collection("programs").doc(id));
+
+    // Erstelle eine neue Referenz für das Kursdokument
+    const courseRef = db.collection("courses").doc();
+
+    // Kurs erstellen mit Program-Referenzen und ID speichern
+    await courseRef.set({
+      id: courseRef.id,  // Speichere die ID direkt im Dokument
+      name,
+      programRefs,       // Liste der Program-Referenzen
+      programIds,        // Liste der Program-IDs als Strings
+    });
 
     res.status(201).json({ id: courseRef.id, message: "Course created" });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error("Error creating course:", error.message);
+    res.status(500).json({ error: "Error creating course: " + error.message });
   }
 });
+
+
+
+// export const createCourse = functions.https.onRequest(async (req, res) => {
+//   try {
+//     const { name, programIds } = req.body;
+
+//     if (!name) {
+//       res.status(400).json({ error: "Name is required" });
+//       return;
+//     }
+
+//     // Falls `programIds` vorhanden sind, validiere die Referenzen
+//     const programRefs = programIds
+//       ? programIds.map((id: string) => db.collection("programs").doc(id))
+//       : [];
+
+//     // Kurs erstellen mit Program-Referenzen
+//     const courseRef = await db.collection("courses").add({ name, programRefs });
+
+//     res.status(201).json({ id: courseRef.id, message: "Course created" });
+//   } catch (error) {
+//     res.status(500).json({ error: "Error creating course: " + error.message });
+//   }
+// });
+
+
+
+// API: einen neuen Kurs erstellen
+// export const createCourse = functions.https.onRequest(async (req, res) => {
+//   try {
+//     const { universityId, name } = req.body;
+
+//     if (!universityId || !name) {
+//       res.status(400).json({ error: "universityId and name are required" });
+//       return;
+//     }
+
+//     const universityRef = db.collection("universities").doc(universityId);
+
+//     // Speichere die University als Reference
+//     const courseRef = await db.collection("courses").add({ universityRef, name });
+
+//     res.status(201).json({ id: courseRef.id, message: "Course created" });
+//   } catch (error) {
+//     res.status(500).json({ error: error.message });
+//   }
+// });
 
 
 // API: Kurse zu einer Universität abrufen
@@ -184,62 +283,67 @@ export const getUserData = functions.https.onRequest(async (req, res) => {
 
 exports.joinCourse = functions.https.onRequest(async (req, res) => {
   corsHandler(req, res, async () => {
+    try {
+      const { userId, courseId } = req.body;
 
-  try {
-    const { userId, courseId } = req.body;
+      if (!userId || !courseId) {
+        res.status(400).json({ error: "userId and courseId are required" });
+        return;
+      }
 
-    if (!userId || !courseId) {
-      res.status(400).json({ error: "userId and courseId are required" });
-      return;
+      const userRef = db.collection("users").doc(userId);
+      const courseRef = db.collection("courses").doc(courseId);
+
+      // ✅ Speichere den aktuellen Timestamp für den User
+      await userRef.update({
+        lastActiveTimestamp: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      // Update user's course to use Document Reference
+      await userRef.set({ courseRef }, { merge: true });
+
+      // Add user to classroom
+      const classroomQuery = db.collection("classrooms").where("courseRef", "==", courseRef);
+      const classroomSnapshot = await classroomQuery.get();
+
+      let classroomId;
+
+      if (classroomSnapshot.empty) {
+        // Create new classroom if it doesn't exist
+        const newClassroom = await db.collection("classrooms").add({
+          courseRef, // Store the course reference here
+          members: [userRef], // Store user references instead of IDs
+          waitingPlayer: null, // Initialize waitingPlayer as null
+        });
+
+        classroomId = newClassroom.id;
+
+        // Update the newly created classroom with its ID
+        await newClassroom.update({
+          classroomId,
+        });
+      } else {
+        // Add user to existing classroom
+        const classroomDoc = classroomSnapshot.docs[0];
+        classroomId = classroomDoc.id;
+
+        // Update members array with the new user
+        await classroomDoc.ref.update({
+          members: FieldValue.arrayUnion(userRef),
+        });
+      }
+
+      res.set("Access-Control-Allow-Origin", "*");
+
+      res.status(200).json({
+        classroomId, // Return only the document ID
+        message: "User joined the course",
+      });
+    } catch (error) {
+      console.error("Error in joinCourse:", error.message);
+      res.status(500).json({ error: error.message });
     }
-
-    const userRef = db.collection("users").doc(userId);
-    const courseRef = db.collection("courses").doc(courseId);
-
-    // Update user's course to use Document Reference
-    await userRef.set({ courseRef }, { merge: true });
-
-    // Add user to classroom
-    const classroomQuery = db.collection("classrooms").where("courseRef", "==", courseRef);
-    const classroomSnapshot = await classroomQuery.get();
-
-    let classroomId;
-
-    if (classroomSnapshot.empty) {
-      // Create new classroom if it doesn't exist
-      const newClassroom = await db.collection("classrooms").add({
-        courseRef, // Store the course reference here
-        members: [userRef], // Store user references instead of IDs
-        waitingPlayer: null, // Initialize waitingPlayer as null
-      });
-
-      classroomId = newClassroom.id;
-
-      // Update the newly created classroom with its ID
-      await newClassroom.update({
-        classroomId,
-      });
-    } else {
-      // Add user to existing classroom
-      const classroomDoc = classroomSnapshot.docs[0];
-      classroomId = classroomDoc.id;
-
-      // Update members array with the new user
-      await classroomDoc.ref.update({
-        members: FieldValue.arrayUnion(userRef),
-      });
-    }
-    res.set('Access-Control-Allow-Origin', '*');
-
-    res.status(200).json({
-      classroomId, // Return only the document ID
-      message: "User joined the course",
-    });
-  } catch (error) {
-    console.error("Error in joinCourse:", error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
+  });
 });
 
 
@@ -634,9 +738,7 @@ export const createCorporateCommunicationQuestions = functions.https.onRequest(a
 
 
 export const joinDuel = functions.https.onRequest(async (req, res) => {
-  
   corsHandler(req, res, async () => {
-
     try {
       const { userId, classroomId } = req.body;
 
@@ -648,6 +750,11 @@ export const joinDuel = functions.https.onRequest(async (req, res) => {
       const userRef = db.collection("users").doc(userId);
       const classroomRef = db.collection("classrooms").doc(classroomId);
 
+      // ✅ Speichere den aktuellen Timestamp für den User
+      await userRef.update({
+        lastActiveTimestamp: FieldValue.serverTimestamp(),
+      });
+
       // Transaktion verwenden, um Race-Conditions zu verhindern
       const result = await db.runTransaction(async (transaction) => {
         const classroomDoc = await transaction.get(classroomRef);
@@ -655,7 +762,6 @@ export const joinDuel = functions.https.onRequest(async (req, res) => {
         if (!classroomDoc.exists) {
           throw new Error("Classroom not found.");
         }
-        
 
         const classroomData = classroomDoc.data();
 
@@ -753,6 +859,96 @@ export const joinDuel = functions.https.onRequest(async (req, res) => {
 });
 
 
+export const matchFriend = functions.https.onRequest(async (req, res) => {
+  corsHandler(req, res, async () => {
+    try {
+      const { userId, friendId, classroomId } = req.body;
+
+      if (!userId || !friendId || !classroomId) {
+        res.status(400).json({ error: "userId, friendId, and classroomId are required." });
+        return;
+      }
+
+      const userRef = db.collection("users").doc(userId);
+      const friendRef = db.collection("users").doc(friendId);
+      const classroomRef = db.collection("classrooms").doc(classroomId);
+
+      // Überprüfen, ob der Freund existiert
+      const friendDoc = await friendRef.get();
+      if (!friendDoc.exists) {
+        res.status(404).json({ error: "Friend not found." });
+        return;
+      }
+
+      // Speichere den aktuellen Timestamp für den User
+      await userRef.update({
+        lastActiveTimestamp: FieldValue.serverTimestamp(),
+      });
+
+      // Funktion zum Generieren von Runden
+      const generateRounds = async (): Promise<any[]> => {
+        const questionsSnapshot = await db.collection("questions").limit(15).get();
+        const questions = questionsSnapshot.docs.map((doc) => ({
+          questionId: doc.id,
+          questionText: doc.data().questionText,
+          answers: doc.data().answers,
+          correctAnswerId: doc.data().correctAnswerId,
+          currentAnswerId: null,
+        }));
+
+        const rounds: any[] = [];
+        for (let i = 0; i < 5; i++) {
+          const roundQuestions = questions.slice(i * 3, i * 3 + 3);
+          rounds.push({
+            roundNumber: i,
+            currentQuestionIndex: 0,
+            player1Answers: roundQuestions.map((q) => ({ ...q, status: "unanswered" })),
+            player2Answers: roundQuestions.map((q) => ({ ...q, status: "unanswered" })),
+          });
+        }
+
+        return rounds;
+      };
+
+      // Runden generieren
+      const rounds = await generateRounds();
+
+      // Neues Duell erstellen
+      const duelRef = db.collection("duels").doc();
+      const duelData: DuelData = {
+        classroomRef,
+        player1: userRef,
+        player2: friendRef,
+        status: "active",
+        currentRound: 0,
+        currentTurn: userRef,
+        scorePlayer1: 0,
+        scorePlayer2: 0,
+        duelId: duelRef.id,
+        rounds,
+      };
+
+      await duelRef.set(duelData);
+
+      // Spieler benachrichtigen
+      await sendNotification(friendRef, "Du bist dran!", "Ein Duell wurde gestartet. Beantworte deine erste Frage.", {
+        duelId: duelRef.id,
+      });
+      await sendNotification(userRef, "Warten auf Spieler 2", "Das Duell wurde gestartet. Dein Freund beginnt.", {
+        duelId: duelRef.id,
+      });
+
+      res.status(200).json({
+        message: "Duel created successfully",
+        duelId: duelRef.id,
+      });
+    } catch (error) {
+      console.error("Error in matchFriend:", error.message);
+      res.status(500).json({ error: "Error creating friend duel: " + error.message });
+    }
+  });
+});
+
 
 
 
@@ -803,9 +999,6 @@ async function sendNotification(
   }
 }
 
-
-
-
 export const answerQuestion = functions.https.onRequest(async (req, res) => {
   corsHandler(req, res, async () => {
 
@@ -818,6 +1011,14 @@ export const answerQuestion = functions.https.onRequest(async (req, res) => {
       }
 
       console.log(`Received request: duelId=${duelId}, userId=${userId}, answerId=${answerId}`);
+
+            // Benutzerreferenz abrufen
+      const userRef = db.collection("users").doc(userId);
+
+      // ✅ Speichere den aktuellen Timestamp für den User
+      await userRef.update({
+        lastActiveTimestamp: FieldValue.serverTimestamp(),
+      });
 
       // Duell-Dokument abrufen
       const duelRef = db.collection("duels").doc(duelId);
@@ -987,6 +1188,198 @@ export const answerQuestion = functions.https.onRequest(async (req, res) => {
   });
 
 });
+
+
+
+
+// export const answerQuestion = functions.https.onRequest(async (req, res) => {
+//   corsHandler(req, res, async () => {
+//     try {
+//       const { duelId, userId, answerId } = req.body;
+
+//       if (!duelId || !userId || !answerId) {
+//         res.status(400).json({ error: "Missing required fields." });
+//         return;
+//       }
+
+//       console.log(`Received request: duelId=${duelId}, userId=${userId}, answerId=${answerId}`);
+
+//       // Benutzerreferenz abrufen
+//       const userRef = db.collection("users").doc(userId);
+
+//       // ✅ Speichere den aktuellen Timestamp für den User
+//       await userRef.update({
+//         lastActiveTimestamp: FieldValue.serverTimestamp(),
+//       });
+
+//       // Duell-Dokument abrufen
+//       const duelRef = db.collection("duels").doc(duelId);
+//       const duelDoc = await duelRef.get();
+
+//       if (!duelDoc.exists) {
+//         res.status(404).json({ error: "Duel not found." });
+//         return;
+//       }
+
+//       const duelData = duelDoc.data() as DuelData;
+//       const { currentRound, currentTurn, rounds, player1, player2, status } = duelData;
+
+//       console.log(`Current turn: ${currentTurn.id}, Current round: ${currentRound}`);
+
+//       // Überprüfen, ob das Duell bereits beendet ist
+//       if (status === "finished") {
+//         res.status(400).json({ error: "The duel has already ended." });
+//         console.log("The duel is already finished.");
+//         return;
+//       }
+
+//       // Überprüfen, ob der Benutzer an diesem Duell beteiligt ist
+//       const isPlayer1 = player1.id === userId;
+//       const isPlayer2 = player2.id === userId;
+
+//       if (!isPlayer1 && !isPlayer2) {
+//         res.status(403).json({ error: "User is not part of this duel." });
+//         return;
+//       }
+
+//       console.log(`User is ${isPlayer1 ? "Player 1" : "Player 2"}`);
+
+//       // Überprüfen, ob der Benutzer am Zug ist
+//       if (currentTurn.id !== userId) {
+//         res.status(403).json({ error: "It's not your turn." });
+//         return;
+//       }
+
+//       // Aktuelle Runde und Frage ermitteln
+//       const round = rounds[currentRound];
+//       if (!round) {
+//         res.status(500).json({ error: "Invalid current round." });
+//         return;
+//       }
+
+//       const { currentQuestionIndex, player1Answers, player2Answers } = round;
+
+//       if (currentQuestionIndex === null || currentQuestionIndex < 0) {
+//         res.status(500).json({ error: "Invalid current question index." });
+//         return;
+//       }
+
+//       console.log(`Current question index: ${currentQuestionIndex}`);
+
+//       // Antworten-Array basierend auf dem Spieler ermitteln
+//       const answersArray = isPlayer1 ? player1Answers : player2Answers;
+
+//       if (!answersArray || currentQuestionIndex >= answersArray.length) {
+//         res.status(500).json({ error: "Invalid answers array or index out of bounds." });
+//         return;
+//       }
+
+//       const question = answersArray[currentQuestionIndex];
+//       if (!question) {
+//         res.status(500).json({ error: "Invalid question data." });
+//         return;
+//       }
+
+//       console.log("Current question fetched successfully:", question);
+
+//       // Überprüfen, ob die Antwort korrekt ist
+//       const isCorrect = question.correctAnswerId === answerId;
+//       console.log(`Answer is ${isCorrect ? "correct" : "incorrect"}`);
+
+//       // Spielerantwort aktualisieren
+//       answersArray[currentQuestionIndex] = {
+//         ...question,
+//         currentAnswerId: answerId,
+//         status: isCorrect ? "correct" : "incorrect",
+//       };
+
+//       // Punkte aktualisieren, falls die Antwort korrekt war
+//       if (isCorrect) {
+//         if (isPlayer1) {
+//           duelData.scorePlayer1 += 1;
+//         } else {
+//           duelData.scorePlayer2 += 1;
+//         }
+//       }
+
+//       console.log("Scores updated:", {
+//         scorePlayer1: duelData.scorePlayer1,
+//         scorePlayer2: duelData.scorePlayer2,
+//       });
+
+//       // Prüfen, ob der Spieler alle Fragen der Runde beantwortet hat
+//       const playerFinishedAllQuestions = answersArray.every(
+//         (answer) => answer.status && answer.status !== "unanswered"
+//       );
+
+//       if (playerFinishedAllQuestions) {
+//         console.log(`Player ${isPlayer1 ? "1" : "2"} has finished all questions.`);
+
+//         if (isPlayer2) {
+//           console.log("Player 2 finished the round.");
+
+//           // Runde ist abgeschlossen, zur nächsten Runde übergehen
+//           if (currentRound === rounds.length - 1) {
+//             duelData.status = "finished";
+
+//             console.log("Duel finished. Final scores:", {
+//               scorePlayer1: duelData.scorePlayer1,
+//               scorePlayer2: duelData.scorePlayer2,
+//             });
+
+//             // Gewinner ermitteln
+//             if (duelData.scorePlayer1 > duelData.scorePlayer2) {
+//               await sendNotification(player1, "Du hast gewonnen!", "Herzlichen Glückwunsch!");
+//               await sendNotification(player2, "Du hast verloren!", "Besser beim nächsten Mal!");
+//             } else if (duelData.scorePlayer2 > duelData.scorePlayer1) {
+//               await sendNotification(player2, "Du hast gewonnen!", "Herzlichen Glückwunsch!");
+//               await sendNotification(player1, "Du hast verloren!", "Besser beim nächsten Mal!");
+//             } else {
+//               await sendNotification(player1, "Unentschieden!", "Das Duell endet unentschieden!");
+//               await sendNotification(player2, "Unentschieden!", "Das Duell endet unentschieden!");
+//             }
+//           } else {
+//             duelData.currentRound += 1;
+//             duelData.currentTurn = player1;
+//             rounds[currentRound].currentQuestionIndex = 0;
+//             console.log("Next round started. Current turn: Player 1");
+//           }
+//         } else {
+//           // Spieler 2 ist an der Reihe
+//           duelData.currentTurn = player2;
+//           rounds[currentRound].currentQuestionIndex = 0;
+//           console.log("Player 2's turn to complete the round.");
+//         }
+//       } else {
+//         // Zur nächsten Frage der Runde übergehen
+//         round.currentQuestionIndex += 1;
+//         console.log("Moved to the next question. New question index:", round.currentQuestionIndex);
+//       }
+
+//       // Duell-Dokument aktualisieren
+//       console.log("Updating duel document with new data.");
+//       await duelRef.update({
+//         rounds,
+//         currentRound: duelData.currentRound,
+//         currentTurn: duelData.currentTurn,
+//         status: duelData.status,
+//         scorePlayer1: duelData.scorePlayer1,
+//         scorePlayer2: duelData.scorePlayer2,
+//       });
+
+//       console.log("Duel document updated successfully.");
+//       res.status(200).json({
+//         message: isCorrect ? "Answer is correct!" : "Answer is incorrect.",
+//         isCorrect,
+//         correctAnswerId: question.correctAnswerId, // Füge die korrekte Antwort-ID hinzu
+//       });
+//     } catch (error) {
+//       console.error("Error in answerQuestion:", error.message, error.stack);
+//       res.status(500).json({ error: "Error processing answer: " + error.message });
+//     }
+//   });
+// });
+
 
 
 
